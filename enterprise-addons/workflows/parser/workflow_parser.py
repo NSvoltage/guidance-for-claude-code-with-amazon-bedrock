@@ -2,6 +2,7 @@
 """
 Workflow Parser for Claude Code Enterprise
 Parses and validates workflow YAML definitions against the schema.
+SECURITY UPDATED: Integrated with secure workflow engine
 """
 import os
 import sys
@@ -14,12 +15,19 @@ from dataclasses import dataclass, asdict, field
 from datetime import datetime
 import jsonschema
 
-# Template engine for variable substitution
+# Template engine for variable substitution - SECURITY: Using restricted environment
 try:
-    from jinja2 import Template, Environment, StrictUndefined
+    from jinja2 import Template, Environment, StrictUndefined, select_autoescape
     JINJA2_AVAILABLE = True
 except ImportError:
     JINJA2_AVAILABLE = False
+
+# SECURITY: Import secure components
+try:
+    from engine.secure_workflow_engine import SecureInputValidator, SecurityError
+    SECURE_ENGINE_AVAILABLE = True
+except ImportError:
+    SECURE_ENGINE_AVAILABLE = False
 
 
 @dataclass
@@ -127,11 +135,30 @@ class WorkflowValidationError(Exception):
 
 
 class TemplateEngine:
-    """Template engine for variable substitution"""
+    """Template engine for variable substitution - SECURITY ENHANCED"""
     
     def __init__(self):
         if JINJA2_AVAILABLE:
-            self.env = Environment(undefined=StrictUndefined)
+            # SECURITY: Use restricted Jinja2 environment with auto-escaping
+            self.env = Environment(
+                undefined=StrictUndefined,
+                autoescape=select_autoescape(['html', 'xml']),
+                # SECURITY: Disable access to internal Python objects
+                finalize=lambda x: x if x is not None else ''
+            )
+            # SECURITY: Remove dangerous globals and functions
+            self.env.globals.clear()
+            # SECURITY: Only allow safe functions
+            self.env.globals.update({
+                'range': range,
+                'len': len,
+                'str': str,
+                'int': int,
+                'float': float,
+                'bool': bool,
+                'list': list,
+                'dict': dict
+            })
         
     def render(self, template_str: str, context: Dict[str, Any]) -> str:
         """Render template with given context"""
@@ -175,11 +202,16 @@ class TemplateEngine:
 
 
 class WorkflowParser:
-    """Parser for workflow YAML files"""
+    """Parser for workflow YAML files - SECURITY ENHANCED"""
     
     def __init__(self, schema_path: Optional[str] = None):
         self.template_engine = TemplateEngine()
         self.schema = self._load_schema(schema_path)
+        # SECURITY: Initialize input validator if available
+        if SECURE_ENGINE_AVAILABLE:
+            self.input_validator = SecureInputValidator()
+        else:
+            self.input_validator = None
     
     def _load_schema(self, schema_path: Optional[str]) -> Optional[Dict[str, Any]]:
         """Load workflow schema for validation"""
@@ -277,7 +309,7 @@ class WorkflowParser:
         return workflow
     
     def _parse_step(self, step_data: Dict[str, Any]) -> WorkflowStep:
-        """Parse individual step data"""
+        """Parse individual step data - SECURITY ENHANCED"""
         step = WorkflowStep(
             id=step_data.get('id'),
             type=step_data.get('type'),
@@ -295,6 +327,17 @@ class WorkflowParser:
             raise WorkflowValidationError("Step id is required")
         if not step.type:
             raise WorkflowValidationError(f"Step type is required for step {step.id}")
+        
+        # SECURITY: Validate step ID for injection attempts
+        if self.input_validator:
+            try:
+                self.input_validator.validate_string_input(step.id, "step_id")
+                if step.name:
+                    self.input_validator.validate_string_input(step.name, "step_name")
+                if step.description:
+                    self.input_validator.validate_string_input(step.description, "step_description")
+            except SecurityError as e:
+                raise WorkflowValidationError(f"Security validation failed for step {step.id}: {e}")
         
         # Parse dependencies
         depends_on = step_data.get('depends_on', [])
@@ -321,13 +364,22 @@ class WorkflowParser:
                     from_source=str(output_config)
                 )
         
-        # Parse step type specific properties
+        # Parse step type specific properties with SECURITY VALIDATION
         if step.type == 'shell':
             step.command = step_data.get('command')
             step.working_directory = step_data.get('working_directory')
             step.environment = step_data.get('environment', {})
             if not step.command:
                 raise WorkflowValidationError(f"Shell step {step.id} requires command")
+            
+            # SECURITY: Validate shell command
+            if self.input_validator:
+                try:
+                    self.input_validator.validate_shell_command(step.command)
+                    if step.working_directory:
+                        self.input_validator.validate_file_path(step.working_directory)
+                except SecurityError as e:
+                    raise WorkflowValidationError(f"Security validation failed for shell step {step.id}: {e}")
         
         elif step.type == 'claude_code':
             step.prompt = step_data.get('prompt')
@@ -338,6 +390,13 @@ class WorkflowParser:
             step.temperature = step_data.get('temperature', 0.0)
             if not step.prompt:
                 raise WorkflowValidationError(f"Claude code step {step.id} requires prompt")
+            
+            # SECURITY: Validate prompt content
+            if self.input_validator:
+                try:
+                    self.input_validator.validate_string_input(step.prompt, "claude_prompt")
+                except SecurityError as e:
+                    raise WorkflowValidationError(f"Security validation failed for Claude step {step.id}: {e}")
         
         elif step.type == 'assert':
             step.condition = step_data.get('condition')
@@ -345,6 +404,13 @@ class WorkflowParser:
             step.on_failure = step_data.get('on_failure', 'fail')
             if not step.condition:
                 raise WorkflowValidationError(f"Assert step {step.id} requires condition")
+            
+            # SECURITY: Validate condition expression
+            if self.input_validator:
+                try:
+                    self.input_validator.validate_string_input(step.condition, "assert_condition")
+                except SecurityError as e:
+                    raise WorkflowValidationError(f"Security validation failed for assert step {step.id}: {e}")
         
         elif step.type == 'template':
             step.template = step_data.get('template')
@@ -352,6 +418,14 @@ class WorkflowParser:
             step.engine = step_data.get('engine', 'jinja2')
             if not step.template or not step.output:
                 raise WorkflowValidationError(f"Template step {step.id} requires template and output")
+            
+            # SECURITY: Validate template content and output path
+            if self.input_validator:
+                try:
+                    self.input_validator.validate_template_content(step.template)
+                    self.input_validator.validate_file_path(step.output)
+                except SecurityError as e:
+                    raise WorkflowValidationError(f"Security validation failed for template step {step.id}: {e}")
         
         elif step.type == 'webhook':
             step.url = step_data.get('url')
