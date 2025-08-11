@@ -1,0 +1,628 @@
+# Fix Type Errors Workflow
+# Automatically analyzes type checking errors and generates fixes
+
+name: fix-type-errors
+version: "1.0"
+description: "Automatically fix type checking errors in codebase"
+author: "Enterprise Platform Team"
+tags:
+  - typing
+  - quality
+  - automation
+
+inputs:
+  target_path:
+    type: string
+    required: true
+    description: "Path to analyze (file or directory)"
+  
+  type_checker:
+    type: string
+    default: "mypy"
+    description: "Type checker to use"
+    validation:
+      enum: ["mypy", "pyright", "typescript", "flow"]
+  
+  max_errors:
+    type: number
+    default: 50
+    description: "Maximum number of errors to fix in one run"
+    validation:
+      min: 1
+      max: 200
+  
+  fix_strategy:
+    type: string
+    default: "conservative"
+    description: "Type fixing strategy"
+    validation:
+      enum: ["conservative", "aggressive", "strict"]
+  
+  create_pr:
+    type: boolean
+    default: true
+    description: "Create pull request with fixes"
+
+outputs:
+  errors_found:
+    type: number
+    description: "Total type errors found"
+    from: "analyze_types.outputs.total_errors"
+  
+  errors_fixed:
+    type: number
+    description: "Number of errors successfully fixed"
+    from: "apply_fixes.outputs.fixed_count"
+  
+  files_modified:
+    type: array
+    description: "List of files that were modified"
+    from: "apply_fixes.outputs.modified_files"
+
+environment:
+  MYPY_CACHE_DIR: ".mypy_cache"
+  TYPE_CHECK_MODE: "strict"
+
+timeout: 2400  # 40 minutes
+
+steps:
+  # Step 1: Run initial type checking
+  - id: analyze_types
+    name: "Analyze type checking errors"
+    type: shell
+    command: |
+      case "{{ inputs.type_checker }}" in
+        "mypy")
+          mypy {{ inputs.target_path }} --show-error-codes --no-error-summary --json-report type_report.json
+          ;;
+        "pyright")
+          pyright {{ inputs.target_path }} --outputjson > type_report.json
+          ;;
+        "typescript")
+          tsc --noEmit --pretty false {{ inputs.target_path }} 2>&1 | tee type_errors.txt
+          ;;
+        *)
+          echo "Unsupported type checker: {{ inputs.type_checker }}"
+          exit 1
+          ;;
+      esac
+    
+    timeout: 600
+    on_failure: "continue"  # Type errors are expected
+    
+    outputs:
+      type_report:
+        type: file
+        from: "./type_report.json"
+      
+      error_log:
+        type: string
+        from: "stderr"
+      
+      total_errors:
+        type: number
+        from: "count_type_errors(type_report)"
+    
+    cache:
+      key: "type-analysis-{{ hash(inputs.target_path) }}-{{ dir_hash(inputs.target_path) }}"
+      ttl: 1800
+
+  # Step 2: Parse and categorize errors
+  - id: categorize_errors
+    name: "Categorize and prioritize type errors"
+    type: shell
+    depends_on: analyze_types
+    command: |
+      python3 -c "
+      import json
+      import sys
+      from collections import defaultdict
+      
+      # Load type checking report
+      try:
+          with open('{{ analyze_types.outputs.type_report }}', 'r') as f:
+              if '{{ inputs.type_checker }}' == 'mypy':
+                  data = json.load(f)
+                  errors = []
+                  for file_path, file_data in data.items():
+                      if isinstance(file_data, list):
+                          for error in file_data:
+                              errors.append({
+                                  'file': file_path,
+                                  'line': error.get('line', 1),
+                                  'column': error.get('column', 1),
+                                  'message': error.get('message', ''),
+                                  'error_code': error.get('error_code', 'unknown'),
+                                  'severity': error.get('severity', 'error')
+                              })
+              else:
+                  # Handle other type checkers
+                  errors = []
+      except:
+          errors = []
+      
+      # Categorize errors by type
+      categories = defaultdict(list)
+      for error in errors:
+          error_code = error.get('error_code', 'unknown')
+          categories[error_code].append(error)
+      
+      # Prioritize errors (most common/easiest to fix first)
+      priority_order = [
+          'type-arg',      # Generic type arguments
+          'assignment',    # Assignment type mismatches
+          'return-value',  # Return type issues
+          'arg-type',      # Argument type issues
+          'attr-defined',  # Attribute access issues
+          'name-defined',  # Name definition issues
+          'import',        # Import issues
+          'misc'           # Other issues
+      ]
+      
+      # Sort errors by priority and limit to max_errors
+      prioritized_errors = []
+      for error_type in priority_order:
+          if error_type in categories:
+              prioritized_errors.extend(categories[error_type])
+              if len(prioritized_errors) >= {{ inputs.max_errors }}:
+                  break
+      
+      prioritized_errors = prioritized_errors[:{{ inputs.max_errors }}]
+      
+      # Output categorized errors
+      result = {
+          'total_errors': len(errors),
+          'prioritized_errors': prioritized_errors,
+          'categories': {k: len(v) for k, v in categories.items()},
+          'selected_count': len(prioritized_errors)
+      }
+      
+      print(json.dumps(result, indent=2))
+      "
+    
+    outputs:
+      categorized_errors:
+        type: object
+        from: "json_parse(stdout)"
+      
+      selected_errors:
+        type: array
+        from: "categorized_errors.prioritized_errors"
+    
+    cache:
+      key: "categorize-{{ hash(analyze_types.outputs.type_report) }}"
+
+  # Step 3: Generate fixes for type errors
+  - id: generate_fixes
+    name: "Generate type error fixes"
+    type: claude_code
+    depends_on: categorize_errors
+    when: "{{ categorize_errors.outputs.categorized_errors.selected_count > 0 }}"
+    
+    security_profile: "restricted"
+    model: "claude-3-sonnet-20240229"
+    use_cache: true
+    max_tokens: 6000
+    temperature: 0.1
+    
+    prompt: |
+      I need to fix type checking errors in a {{ inputs.type_checker }} project. Please analyze the errors and provide specific fixes.
+
+      **Type Checker:** {{ inputs.type_checker }}
+      **Fix Strategy:** {{ inputs.fix_strategy }}
+      **Target Path:** {{ inputs.target_path }}
+
+      **Type Errors to Fix:**
+      ```json
+      {{ categorize_errors.outputs.selected_errors | json_pretty }}
+      ```
+
+      **Error Categories:**
+      {{ categorize_errors.outputs.categorized_errors.categories | json_pretty }}
+
+      **Fix Strategy Guidelines:**
+      {% if inputs.fix_strategy == 'conservative' %}
+      - Add minimal type annotations where needed
+      - Use Union types for ambiguous cases  
+      - Add type: ignore comments for complex cases
+      - Prefer Optional[T] over T | None for compatibility
+      {% elif inputs.fix_strategy == 'aggressive' %}
+      - Add comprehensive type annotations
+      - Use strict typing (no Any types)
+      - Refactor code structure if needed for better typing
+      - Use TypedDict and Protocol where appropriate
+      {% elif inputs.fix_strategy == 'strict' %}
+      - Enforce strictest typing rules
+      - No type: ignore comments allowed
+      - Use literal types and enums where possible
+      - Add runtime type validation where needed
+      {% endif %}
+
+      For each error, provide:
+
+      1. **File and Location**: Exact file path and line number
+      2. **Error Analysis**: What's causing the type error
+      3. **Proposed Fix**: Specific code changes needed
+      4. **Alternative Solutions**: Other ways to fix if applicable
+
+      **Requirements:**
+      - Provide working, syntactically correct fixes
+      - Maintain backward compatibility where possible
+      - Follow project's existing code style
+      - Group related fixes by file for efficient application
+      - Include import statements if new types are needed
+
+      **Output Format:**
+      Please provide a JSON response with this structure:
+      ```json
+      {
+        "fixes": [
+          {
+            "file": "path/to/file.py",
+            "line": 42,
+            "column": 10,
+            "error_code": "assignment",
+            "original_error": "error message",
+            "fix_type": "add_annotation|modify_code|add_import",
+            "fix_description": "brief description",
+            "original_code": "original line of code",
+            "fixed_code": "fixed line of code",
+            "additional_imports": ["from typing import List"],
+            "confidence": 0.95
+          }
+        ],
+        "summary": {
+          "total_fixes": 10,
+          "fix_types": {"add_annotation": 5, "modify_code": 3, "add_import": 2},
+          "estimated_success_rate": 0.90,
+          "potential_breaking_changes": []
+        }
+      }
+      ```
+
+      Generate comprehensive fixes for the type errors.
+    
+    inputs:
+      - "{{ categorize_errors.outputs.type_report }}"
+    
+    outputs:
+      fix_plan:
+        type: object
+        from: "extract_json_block(response)"
+      
+      proposed_fixes:
+        type: array
+        from: "fix_plan.fixes"
+      
+      fix_summary:
+        type: object
+        from: "fix_plan.summary"
+    
+    cache:
+      key: "generate-fixes-{{ hash(categorize_errors.outputs.selected_errors, inputs.fix_strategy) }}"
+      ttl: 3600
+
+  # Step 4: Apply fixes to files
+  - id: apply_fixes
+    name: "Apply type error fixes to files"
+    type: shell
+    depends_on: generate_fixes
+    command: |
+      python3 -c "
+      import json
+      import sys
+      import os
+      from pathlib import Path
+      
+      # Load fix plan
+      fix_plan = {{ generate_fixes.outputs.fix_plan | json }}
+      fixes = fix_plan.get('fixes', [])
+      
+      # Group fixes by file
+      files_to_fix = {}
+      for fix in fixes:
+          file_path = fix['file']
+          if file_path not in files_to_fix:
+              files_to_fix[file_path] = []
+          files_to_fix[file_path].append(fix)
+      
+      modified_files = []
+      fixed_count = 0
+      
+      # Apply fixes to each file
+      for file_path, file_fixes in files_to_fix.items():
+          try:
+              # Read original file
+              with open(file_path, 'r') as f:
+                  lines = f.readlines()
+              
+              original_lines = lines.copy()
+              
+              # Sort fixes by line number (reverse order to maintain line numbers)
+              file_fixes.sort(key=lambda x: x['line'], reverse=True)
+              
+              # Track imports to add
+              imports_to_add = set()
+              
+              # Apply each fix
+              for fix in file_fixes:
+                  line_num = fix['line'] - 1  # Convert to 0-based
+                  if 0 <= line_num < len(lines):
+                      if fix['fix_type'] == 'modify_code':
+                          lines[line_num] = fix['fixed_code'] + '\n'
+                          fixed_count += 1
+                      elif fix['fix_type'] == 'add_annotation':
+                          lines[line_num] = fix['fixed_code'] + '\n'
+                          fixed_count += 1
+                      
+                      # Collect imports
+                      for imp in fix.get('additional_imports', []):
+                          imports_to_add.add(imp)
+              
+              # Add imports at the top of file
+              if imports_to_add:
+                  import_lines = [imp + '\n' for imp in sorted(imports_to_add)]
+                  # Find where to insert imports (after existing imports/docstring)
+                  insert_pos = 0
+                  for i, line in enumerate(lines):
+                      if line.strip().startswith('import ') or line.strip().startswith('from '):
+                          insert_pos = i + 1
+                      elif line.strip() and not line.strip().startswith('#'):
+                          break
+                  
+                  # Insert imports
+                  for imp_line in reversed(import_lines):
+                      lines.insert(insert_pos, imp_line)
+              
+              # Write modified file if changes were made
+              if lines != original_lines:
+                  with open(file_path, 'w') as f:
+                      f.writelines(lines)
+                  modified_files.append(file_path)
+                  print(f'✅ Applied fixes to {file_path}')
+              
+          except Exception as e:
+              print(f'❌ Error fixing {file_path}: {e}', file=sys.stderr)
+      
+      # Output results
+      result = {
+          'fixed_count': fixed_count,
+          'modified_files': modified_files,
+          'files_processed': len(files_to_fix)
+      }
+      print(json.dumps(result))
+      "
+    
+    timeout: 300
+    
+    outputs:
+      apply_result:
+        type: object
+        from: "json_parse(stdout)"
+      
+      fixed_count:
+        type: number
+        from: "apply_result.fixed_count"
+      
+      modified_files:
+        type: array
+        from: "apply_result.modified_files"
+
+  # Step 5: Verify fixes by re-running type checker
+  - id: verify_fixes
+    name: "Verify type fixes are successful"
+    type: shell
+    depends_on: apply_fixes
+    command: |
+      echo "🔍 Re-running type checker to verify fixes..."
+      
+      case "{{ inputs.type_checker }}" in
+        "mypy")
+          mypy {{ inputs.target_path }} --show-error-codes --no-error-summary --json-report verification_report.json
+          ;;
+        "pyright")
+          pyright {{ inputs.target_path }} --outputjson > verification_report.json
+          ;;
+        "typescript")
+          tsc --noEmit --pretty false {{ inputs.target_path }} 2>&1 | tee verification_errors.txt
+          ;;
+      esac
+      
+      # Count remaining errors
+      if [[ -f "verification_report.json" ]]; then
+        REMAINING_ERRORS=$(python3 -c "
+        import json
+        try:
+            with open('verification_report.json', 'r') as f:
+                data = json.load(f)
+                count = 0
+                for file_data in data.values():
+                    if isinstance(file_data, list):
+                        count += len(file_data)
+                print(count)
+        except:
+            print(0)
+        ")
+      else
+        REMAINING_ERRORS=0
+      fi
+      
+      INITIAL_ERRORS={{ analyze_types.outputs.total_errors }}
+      ERRORS_FIXED=$((INITIAL_ERRORS - REMAINING_ERRORS))
+      
+      echo "Initial errors: $INITIAL_ERRORS"
+      echo "Remaining errors: $REMAINING_ERRORS"  
+      echo "Errors fixed: $ERRORS_FIXED"
+      
+      # Output verification results
+      echo "{
+        \"initial_errors\": $INITIAL_ERRORS,
+        \"remaining_errors\": $REMAINING_ERRORS,
+        \"errors_fixed\": $ERRORS_FIXED,
+        \"success_rate\": $(echo \"scale=2; $ERRORS_FIXED * 100 / $INITIAL_ERRORS\" | bc -l)
+      }"
+    
+    timeout: 300
+    on_failure: "continue"
+    
+    outputs:
+      verification_result:
+        type: object
+        from: "json_parse(stdout)"
+      
+      remaining_errors:
+        type: number
+        from: "verification_result.remaining_errors"
+      
+      success_rate:
+        type: number
+        from: "verification_result.success_rate"
+
+  # Step 6: Generate fix report
+  - id: generate_report
+    name: "Generate type fixing report"
+    type: template
+    depends_on:
+      - analyze_types
+      - generate_fixes
+      - apply_fixes
+      - verify_fixes
+    
+    template: |
+      # Type Error Fixing Report
+
+      **Target:** {{ inputs.target_path }}
+      **Type Checker:** {{ inputs.type_checker }}
+      **Strategy:** {{ inputs.fix_strategy }}
+      **Date:** {{ now() }}
+
+      ## Summary
+
+      | Metric | Value |
+      |--------|-------|
+      | Initial Errors | {{ analyze_types.outputs.total_errors }} |
+      | Errors Analyzed | {{ categorize_errors.outputs.categorized_errors.selected_count }} |
+      | Fixes Applied | {{ apply_fixes.outputs.fixed_count }} |
+      | Files Modified | {{ apply_fixes.outputs.modified_files | length }} |
+      | Remaining Errors | {{ verify_fixes.outputs.remaining_errors }} |
+      | Success Rate | {{ verify_fixes.outputs.success_rate }}% |
+
+      ## Error Categories Fixed
+
+      {% for category, count in categorize_errors.outputs.categorized_errors.categories.items() %}
+      - **{{ category }}**: {{ count }} errors
+      {% endfor %}
+
+      ## Files Modified
+
+      {% for file in apply_fixes.outputs.modified_files %}
+      - `{{ file }}`
+      {% endfor %}
+
+      ## Fix Details
+
+      ### Types of Fixes Applied
+      {% for fix_type, count in generate_fixes.outputs.fix_summary.fix_types.items() %}
+      - **{{ fix_type | replace('_', ' ') | title }}**: {{ count }} fixes
+      {% endfor %}
+
+      ### Confidence Level
+      - Estimated Success Rate: {{ generate_fixes.outputs.fix_summary.estimated_success_rate * 100 }}%
+      - Actual Success Rate: {{ verify_fixes.outputs.success_rate }}%
+
+      {% if generate_fixes.outputs.fix_summary.potential_breaking_changes %}
+      ### ⚠️ Potential Breaking Changes
+      {% for change in generate_fixes.outputs.fix_summary.potential_breaking_changes %}
+      - {{ change }}
+      {% endfor %}
+      {% endif %}
+
+      ## Next Steps
+
+      {% if verify_fixes.outputs.remaining_errors > 0 %}
+      - {{ verify_fixes.outputs.remaining_errors }} errors still remain
+      - Consider running workflow again with different strategy
+      - Manual review may be needed for complex cases
+      {% else %}
+      - All type errors have been fixed! 🎉
+      - Code is now type-check clean
+      {% endif %}
+
+      ---
+      *Report generated by Claude Code Enterprise Workflow*
+    
+    output: "type-fix-report-{{ now() | date('%Y%m%d-%H%M%S') }}.md"
+
+  # Step 7: Run additional validation (optional)
+  - id: run_tests
+    name: "Run tests to ensure fixes don't break functionality"
+    type: shell
+    depends_on: apply_fixes
+    when: "{{ env.RUN_TESTS == 'true' }}"
+    command: |
+      # Run test suite to ensure type fixes don't break functionality
+      if [[ -f "pytest.ini" || -f "pyproject.toml" ]]; then
+        pytest -v --tb=short
+      elif [[ -f "package.json" ]]; then
+        npm test
+      elif [[ -f "go.mod" ]]; then
+        go test ./...
+      else
+        echo "No test configuration found, skipping tests"
+      fi
+    
+    timeout: 600
+    on_failure: "warn"
+    
+    outputs:
+      test_result:
+        type: string
+        from: "stdout"
+
+  # Step 8: Create pull request with fixes
+  - id: create_pr
+    name: "Create pull request with type fixes"
+    type: shell
+    depends_on:
+      - apply_fixes
+      - generate_report
+    when: "{{ inputs.create_pr and apply_fixes.outputs.fixed_count > 0 }}"
+    
+    command: |
+      # Stage all modified files
+      {% for file in apply_fixes.outputs.modified_files %}
+      git add "{{ file }}"
+      {% endfor %}
+      
+      # Add report
+      git add type-fix-report-*.md
+      
+      # Create commit
+      git commit -m "fix: resolve {{ apply_fixes.outputs.fixed_count }} type checking errors
+
+      Type Checker: {{ inputs.type_checker }}
+      Strategy: {{ inputs.fix_strategy }}
+      Success Rate: {{ verify_fixes.outputs.success_rate }}%
+      
+      Files modified:
+      {% for file in apply_fixes.outputs.modified_files %}
+      - {{ file }}
+      {% endfor %}
+      
+      Automated by: Claude Code Enterprise Workflow
+      "
+      
+      # Create pull request
+      PR_URL=$(gh pr create \
+        --title "Fix {{ apply_fixes.outputs.fixed_count }} type checking errors in {{ inputs.target_path }}" \
+        --body "$(cat type-fix-report-*.md)" \
+        --label "typing,automated,quality" \
+        --assignee "@me")
+      
+      echo "Pull request created: $PR_URL"
+      echo "$PR_URL"
+    
+    outputs:
+      pr_url:
+        type: string
+        from: "extract_url(stdout)"

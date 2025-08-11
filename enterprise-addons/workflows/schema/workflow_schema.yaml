@@ -1,0 +1,427 @@
+# Claude Code Enterprise Workflow Schema v1.0
+# JSON Schema definition for workflow YAML files
+
+$schema: "http://json-schema.org/draft-07/schema#"
+title: "Claude Code Enterprise Workflow Schema"
+description: "Schema for defining structured workflows with deterministic and agentic steps"
+type: "object"
+
+required:
+  - name
+  - version
+  - steps
+
+properties:
+  name:
+    type: string
+    description: "Unique workflow name (kebab-case)"
+    pattern: "^[a-z][a-z0-9-]*$"
+    
+  version:
+    type: string
+    description: "Semantic version (e.g., 1.0.0)"
+    pattern: "^\\d+\\.\\d+(\\.\\d+)?$"
+    
+  description:
+    type: string
+    description: "Human-readable workflow description"
+    
+  author:
+    type: string
+    description: "Workflow author/team"
+    
+  tags:
+    type: array
+    items:
+      type: string
+    description: "Workflow categorization tags"
+    
+  inputs:
+    type: object
+    description: "Workflow input parameters"
+    patternProperties:
+      "^[a-zA-Z_][a-zA-Z0-9_]*$":
+        type: object
+        required:
+          - type
+        properties:
+          type:
+            enum: ["string", "number", "boolean", "array", "object", "file", "artifact"]
+          description:
+            type: string
+          required:
+            type: boolean
+            default: false
+          default:
+            description: "Default value for optional parameters"
+          validation:
+            type: object
+            properties:
+              pattern:
+                type: string
+                description: "Regex pattern for string validation"
+              min:
+                type: number
+                description: "Minimum value/length"
+              max:
+                type: number
+                description: "Maximum value/length"
+              enum:
+                type: array
+                description: "Allowed values"
+                
+  outputs:
+    type: object
+    description: "Workflow output definitions"
+    patternProperties:
+      "^[a-zA-Z_][a-zA-Z0-9_]*$":
+        type: object
+        required:
+          - type
+        properties:
+          type:
+            enum: ["string", "number", "boolean", "array", "object", "file", "artifact"]
+          description:
+            type: string
+          from:
+            type: string
+            description: "Step output reference (e.g., 'step1.outputs.result')"
+            
+  environment:
+    type: object
+    description: "Environment variables for workflow execution"
+    patternProperties:
+      "^[A-Z_][A-Z0-9_]*$":
+        type: string
+        
+  timeout:
+    type: integer
+    description: "Workflow timeout in seconds"
+    minimum: 1
+    maximum: 86400
+    default: 3600
+    
+  retry:
+    type: object
+    properties:
+      attempts:
+        type: integer
+        minimum: 1
+        maximum: 10
+        default: 3
+      delay:
+        type: integer
+        minimum: 1
+        maximum: 300
+        default: 30
+      backoff:
+        enum: ["linear", "exponential"]
+        default: "exponential"
+        
+  cache:
+    type: object
+    description: "Global cache configuration"
+    properties:
+      enabled:
+        type: boolean
+        default: true
+      ttl:
+        type: integer
+        minimum: 60
+        maximum: 2592000
+        default: 86400
+        description: "Cache TTL in seconds"
+      version:
+        type: string
+        description: "Cache version for invalidation"
+        
+  steps:
+    type: array
+    description: "Workflow execution steps"
+    minItems: 1
+    items:
+      type: object
+      required:
+        - id
+        - type
+      properties:
+        id:
+          type: string
+          description: "Unique step identifier"
+          pattern: "^[a-z][a-z0-9_]*$"
+          
+        name:
+          type: string
+          description: "Human-readable step name"
+          
+        description:
+          type: string
+          description: "Step description"
+          
+        type:
+          enum: ["shell", "claude_code", "assert", "template", "webhook", "conditional"]
+          description: "Step execution type"
+          
+        depends_on:
+          oneOf:
+            - type: string
+            - type: array
+              items:
+                type: string
+          description: "Step dependencies (step IDs)"
+          
+        when:
+          type: string
+          description: "Conditional execution (template expression)"
+          
+        timeout:
+          type: integer
+          description: "Step timeout in seconds"
+          minimum: 1
+          maximum: 3600
+          
+        retry:
+          type: object
+          properties:
+            attempts:
+              type: integer
+              minimum: 1
+              maximum: 10
+            delay:
+              type: integer
+              minimum: 1
+              maximum: 300
+            on_failure:
+              enum: ["retry", "continue", "fail"]
+              default: "retry"
+              
+        cache:
+          type: object
+          properties:
+            enabled:
+              type: boolean
+              default: true
+            key:
+              type: string
+              description: "Custom cache key template"
+            ttl:
+              type: integer
+              minimum: 60
+              maximum: 2592000
+              
+        inputs:
+          type: object
+          description: "Step input parameters"
+          
+        outputs:
+          type: object
+          description: "Step output definitions"
+          patternProperties:
+            "^[a-zA-Z_][a-zA-Z0-9_]*$":
+              type: object
+              properties:
+                type:
+                  enum: ["string", "number", "boolean", "array", "object", "file", "artifact"]
+                description:
+                  type: string
+                from:
+                  type: string
+                  description: "Source of output value"
+      
+      # Step type specific properties
+      allOf:
+        - if:
+            properties:
+              type:
+                const: "shell"
+          then:
+            required:
+              - command
+            properties:
+              command:
+                type: string
+                description: "Shell command to execute"
+              working_directory:
+                type: string
+                description: "Working directory for command execution"
+              environment:
+                type: object
+                description: "Additional environment variables"
+              capture_output:
+                type: boolean
+                default: true
+                description: "Capture stdout/stderr"
+                
+        - if:
+            properties:
+              type:
+                const: "claude_code"
+          then:
+            required:
+              - prompt
+            properties:
+              prompt:
+                type: string
+                description: "Prompt for Claude Code execution"
+              model:
+                type: string
+                description: "Claude model to use"
+                default: "claude-3-sonnet-20240229"
+              security_profile:
+                enum: ["plan_only", "restricted", "standard", "elevated"]
+                default: "restricted"
+                description: "Security profile for execution"
+              use_cache:
+                type: boolean
+                default: true
+                description: "Use prompt caching"
+              max_tokens:
+                type: integer
+                minimum: 1
+                maximum: 200000
+                description: "Maximum tokens in response"
+              temperature:
+                type: number
+                minimum: 0
+                maximum: 1
+                description: "Response randomness"
+                
+        - if:
+            properties:
+              type:
+                const: "assert"
+          then:
+            required:
+              - condition
+            properties:
+              condition:
+                type: string
+                description: "Assertion condition (template expression)"
+              message:
+                type: string
+                description: "Failure message"
+              on_failure:
+                enum: ["fail", "warn", "continue"]
+                default: "fail"
+                
+        - if:
+            properties:
+              type:
+                const: "template"
+          then:
+            required:
+              - template
+              - output
+            properties:
+              template:
+                type: string
+                description: "Template content"
+              output:
+                type: string
+                description: "Output file path"
+              engine:
+                enum: ["jinja2", "mustache"]
+                default: "jinja2"
+                
+        - if:
+            properties:
+              type:
+                const: "webhook"
+          then:
+            required:
+              - url
+              - method
+            properties:
+              url:
+                type: string
+                format: uri
+                description: "Webhook URL"
+              method:
+                enum: ["GET", "POST", "PUT", "DELETE"]
+                default: "POST"
+              headers:
+                type: object
+                description: "HTTP headers"
+              body:
+                type: string
+                description: "Request body template"
+              timeout:
+                type: integer
+                minimum: 1
+                maximum: 300
+                default: 30
+                
+        - if:
+            properties:
+              type:
+                const: "conditional"
+          then:
+            required:
+              - condition
+              - then_steps
+            properties:
+              condition:
+                type: string
+                description: "Condition expression"
+              then_steps:
+                type: array
+                items:
+                  $ref: "#/properties/steps/items"
+                description: "Steps to execute if condition is true"
+              else_steps:
+                type: array
+                items:
+                  $ref: "#/properties/steps/items"
+                description: "Steps to execute if condition is false"
+
+# Additional schema definitions
+definitions:
+  template_expression:
+    type: string
+    description: "Template expression using {{ }} syntax"
+    pattern: ".*\\{\\{.*\\}\\}.*"
+    
+  step_reference:
+    type: string
+    description: "Reference to another step output"
+    pattern: "^[a-z][a-z0-9_]*\\.(outputs|status|duration)\\.[a-zA-Z_][a-zA-Z0-9_]*$"
+
+# Example workflow reference
+examples:
+  - name: "increase-test-coverage"
+    version: "1.0"
+    description: "Increase test coverage for a specific file"
+    inputs:
+      target_file:
+        type: "string"
+        required: true
+        description: "Path to file to increase coverage for"
+      target_coverage:
+        type: "number"
+        default: 90
+        validation:
+          min: 0
+          max: 100
+    outputs:
+      coverage_achieved:
+        type: "number"
+        from: "verify_coverage.outputs.coverage_percentage"
+    steps:
+      - id: "baseline"
+        type: "shell"
+        command: "pytest --cov --cov-report=xml {{ inputs.target_file }}"
+        cache:
+          key: "coverage-{{ hash(inputs.target_file) }}"
+        outputs:
+          coverage_xml:
+            type: "file"
+            from: "./coverage.xml"
+      - id: "generate_tests"
+        type: "claude_code"
+        depends_on: "baseline"
+        security_profile: "restricted"
+        prompt: |
+          Analyze {{ inputs.target_file }} and generate tests to reach {{ inputs.target_coverage }}% coverage.
+          Current coverage report: {{ baseline.outputs.coverage_xml }}
+        cache:
+          key: "tests-{{ hash(inputs.target_file, inputs.target_coverage) }}"

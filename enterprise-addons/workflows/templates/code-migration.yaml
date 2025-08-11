@@ -1,0 +1,722 @@
+# Code Migration Workflow
+# Automatically migrates code from one framework/version to another with validation
+
+name: code-migration
+version: "1.0"  
+description: "Migrate code from one framework/version to another with automated testing"
+author: "Enterprise Platform Team"
+tags:
+  - migration
+  - modernization
+  - automation
+
+inputs:
+  source_path:
+    type: string
+    required: true
+    description: "Path to source code to migrate"
+  
+  migration_type:
+    type: string
+    required: true
+    description: "Type of migration to perform"
+    validation:
+      enum: ["python2to3", "react-class-to-hooks", "angular-upgrade", "django-upgrade", "custom"]
+  
+  target_version:
+    type: string
+    required: true
+    description: "Target framework/language version"
+  
+  migration_config:
+    type: object
+    default: {}
+    description: "Migration-specific configuration options"
+  
+  dry_run:
+    type: boolean
+    default: false
+    description: "Perform dry run without making changes"
+  
+  create_backup:
+    type: boolean  
+    default: true
+    description: "Create backup of original code"
+  
+  run_validation:
+    type: boolean
+    default: true
+    description: "Run validation tests after migration"
+
+outputs:
+  migration_success:
+    type: boolean
+    description: "Whether migration completed successfully"
+    from: "validate_migration.outputs.success"
+  
+  files_migrated:
+    type: number
+    description: "Number of files migrated"
+    from: "perform_migration.outputs.files_migrated"
+  
+  issues_found:
+    type: array
+    description: "Issues found during migration"
+    from: "validate_migration.outputs.issues"
+  
+  backup_location:
+    type: string
+    description: "Location of backup files"
+    from: "create_backup.outputs.backup_path"
+
+environment:
+  MIGRATION_WORKSPACE: "/tmp/migration-{{ execution_id }}"
+  BACKUP_PREFIX: "backup-{{ now() | date('%Y%m%d-%H%M%S') }}"
+
+timeout: 3600  # 1 hour
+
+steps:
+  # Step 1: Analyze source code structure
+  - id: analyze_source
+    name: "Analyze source code structure"
+    type: shell
+    command: |
+      echo "🔍 Analyzing source code at {{ inputs.source_path }}"
+      
+      # Create analysis report
+      python3 -c "
+      import os
+      import json
+      from pathlib import Path
+      
+      source_path = '{{ inputs.source_path }}'
+      analysis = {
+          'total_files': 0,
+          'file_types': {},
+          'directory_structure': {},
+          'estimated_complexity': 'low'
+      }
+      
+      if os.path.isfile(source_path):
+          # Single file analysis
+          analysis['total_files'] = 1
+          ext = Path(source_path).suffix
+          analysis['file_types'][ext] = 1
+          analysis['single_file'] = True
+      else:
+          # Directory analysis
+          for root, dirs, files in os.walk(source_path):
+              for file in files:
+                  analysis['total_files'] += 1
+                  ext = Path(file).suffix
+                  analysis['file_types'][ext] = analysis['file_types'].get(ext, 0) + 1
+          
+          analysis['single_file'] = False
+      
+      # Estimate complexity based on file count
+      if analysis['total_files'] > 100:
+          analysis['estimated_complexity'] = 'high'
+      elif analysis['total_files'] > 20:
+          analysis['estimated_complexity'] = 'medium'
+      
+      print(json.dumps(analysis, indent=2))
+      "
+    
+    outputs:
+      source_analysis:
+        type: object
+        from: "json_parse(stdout)"
+      
+      total_files:
+        type: number
+        from: "source_analysis.total_files"
+      
+      complexity:
+        type: string
+        from: "source_analysis.estimated_complexity"
+    
+    cache:
+      key: "analyze-source-{{ hash(inputs.source_path) }}-{{ dir_hash(inputs.source_path) }}"
+
+  # Step 2: Create backup of source code
+  - id: create_backup
+    name: "Create backup of source code"
+    type: shell
+    depends_on: analyze_source
+    when: "{{ inputs.create_backup }}"
+    command: |
+      BACKUP_DIR="${{ env.BACKUP_PREFIX }}-{{ inputs.migration_type }}"
+      
+      echo "📦 Creating backup in $BACKUP_DIR"
+      
+      if [[ -f "{{ inputs.source_path }}" ]]; then
+        # Single file backup
+        cp "{{ inputs.source_path }}" "$BACKUP_DIR-$(basename {{ inputs.source_path }})"
+        echo "$BACKUP_DIR-$(basename {{ inputs.source_path }})"
+      else
+        # Directory backup
+        cp -r "{{ inputs.source_path }}" "$BACKUP_DIR"
+        echo "$BACKUP_DIR"
+      fi
+    
+    outputs:
+      backup_path:
+        type: string
+        from: "stdout"
+
+  # Step 3: Setup migration workspace
+  - id: setup_workspace
+    name: "Setup migration workspace"
+    type: shell
+    depends_on: analyze_source
+    command: |
+      mkdir -p "${{ env.MIGRATION_WORKSPACE }}"
+      
+      # Copy source to workspace
+      if [[ -f "{{ inputs.source_path }}" ]]; then
+        cp "{{ inputs.source_path }}" "${{ env.MIGRATION_WORKSPACE }}/"
+      else
+        cp -r "{{ inputs.source_path }}"/* "${{ env.MIGRATION_WORKSPACE }}/"
+      fi
+      
+      echo "✅ Workspace setup complete: ${{ env.MIGRATION_WORKSPACE }}"
+    
+    outputs:
+      workspace_path:
+        type: string
+        from: "{{ env.MIGRATION_WORKSPACE }}"
+
+  # Step 4: Generate migration plan
+  - id: generate_migration_plan
+    name: "Generate migration plan"
+    type: claude_code
+    depends_on: 
+      - analyze_source
+      - setup_workspace
+    
+    security_profile: "restricted"
+    model: "claude-3-sonnet-20240229"
+    use_cache: true
+    max_tokens: 4000
+    temperature: 0.1
+    
+    prompt: |
+      I need to create a migration plan for {{ inputs.migration_type }} from current version to {{ inputs.target_version }}.
+
+      **Migration Details:**
+      - Type: {{ inputs.migration_type }}
+      - Source Path: {{ inputs.source_path }}
+      - Target Version: {{ inputs.target_version }}
+      - Total Files: {{ analyze_source.outputs.total_files }}
+      - Complexity: {{ analyze_source.outputs.complexity }}
+      
+      **File Analysis:**
+      {{ analyze_source.outputs.source_analysis | json_pretty }}
+      
+      **Migration Configuration:**
+      {{ inputs.migration_config | json_pretty }}
+
+      Please create a detailed migration plan that includes:
+
+      1. **Pre-migration Steps**: Setup and preparation required
+      2. **Migration Steps**: Specific transformations needed
+      3. **Post-migration Steps**: Validation and cleanup
+      4. **Risk Assessment**: Potential issues and mitigation strategies
+      5. **Rollback Plan**: How to revert if migration fails
+
+      **Migration Type Specific Instructions:**
+
+      {% if inputs.migration_type == 'python2to3' %}
+      Focus on:
+      - Print statement to function conversion
+      - Integer division changes
+      - String/Unicode handling
+      - Import path updates
+      - Iterator vs list changes
+      {% elif inputs.migration_type == 'react-class-to-hooks' %}
+      Focus on:
+      - Class component to functional component conversion
+      - State management with useState
+      - Lifecycle methods to useEffect
+      - Context API updates
+      - Event handler conversions
+      {% elif inputs.migration_type == 'angular-upgrade' %}
+      Focus on:
+      - Component decorator updates
+      - Template syntax changes
+      - Dependency injection updates
+      - Router configuration changes
+      - Build configuration updates
+      {% elif inputs.migration_type == 'django-upgrade' %}
+      Focus on:
+      - URL pattern updates
+      - Model field changes
+      - Settings configuration
+      - Template tag updates
+      - Deprecated feature removal
+      {% endif %}
+
+      **Output Format:**
+      Provide a JSON response with this structure:
+      ```json
+      {
+        "migration_plan": {
+          "pre_steps": ["step1", "step2"],
+          "migration_steps": [
+            {
+              "step_name": "convert_imports",
+              "description": "Update import statements",
+              "files_affected": ["*.py"],
+              "transformations": [
+                {
+                  "pattern": "from __future__ import.*",
+                  "replacement": "",
+                  "description": "Remove future imports"
+                }
+              ]
+            }
+          ],
+          "post_steps": ["validation", "testing"],
+          "estimated_duration_minutes": 30
+        },
+        "risks": [
+          {
+            "risk": "Breaking changes in API",
+            "impact": "high",
+            "mitigation": "Comprehensive testing"
+          }
+        ],
+        "validation_commands": ["python -m py_compile *.py"],
+        "rollback_steps": ["restore from backup"]
+      }
+      ```
+    
+    outputs:
+      migration_plan:
+        type: object
+        from: "extract_json_block(response)"
+      
+      estimated_duration:
+        type: number
+        from: "migration_plan.migration_plan.estimated_duration_minutes"
+      
+      validation_commands:
+        type: array
+        from: "migration_plan.validation_commands"
+    
+    cache:
+      key: "migration-plan-{{ hash(inputs.migration_type, inputs.target_version, analyze_source.outputs.source_analysis) }}"
+
+  # Step 5: Perform automated migration
+  - id: perform_migration
+    name: "Perform automated code migration"
+    type: shell
+    depends_on: generate_migration_plan
+    when: "{{ not inputs.dry_run }}"
+    command: |
+      cd "${{ env.MIGRATION_WORKSPACE }}"
+      
+      echo "🔄 Starting migration: {{ inputs.migration_type }}"
+      
+      MIGRATION_LOG="migration.log"
+      FILES_MIGRATED=0
+      
+      # Apply migration based on type
+      case "{{ inputs.migration_type }}" in
+        "python2to3")
+          echo "Converting Python 2 to Python 3..."
+          if command -v 2to3 &> /dev/null; then
+            find . -name "*.py" -exec 2to3 -w {} \; 2>&1 | tee $MIGRATION_LOG
+            FILES_MIGRATED=$(find . -name "*.py" | wc -l)
+          else
+            echo "2to3 tool not found, using manual conversion"
+            # Manual conversion patterns
+            find . -name "*.py" -exec sed -i 's/print \(.*\)/print(\1)/g' {} \;
+            find . -name "*.py" -exec sed -i 's/raw_input/input/g' {} \;
+            FILES_MIGRATED=$(find . -name "*.py" | wc -l)
+          fi
+          ;;
+          
+        "react-class-to-hooks")
+          echo "Converting React class components to hooks..."
+          # Use jscodeshift or similar tool if available
+          if command -v jscodeshift &> /dev/null && [[ -f "transforms/class-to-hooks.js" ]]; then
+            find . -name "*.jsx" -o -name "*.js" | xargs jscodeshift -t transforms/class-to-hooks.js
+          else
+            echo "Manual React conversion not implemented - using Claude Code integration"
+          fi
+          FILES_MIGRATED=$(find . -name "*.jsx" -o -name "*.js" | wc -l)
+          ;;
+          
+        "django-upgrade")
+          echo "Upgrading Django code..."
+          if command -v django-upgrade &> /dev/null; then
+            find . -name "*.py" -exec django-upgrade --target-version {{ inputs.target_version }} {} \;
+          else
+            # Manual Django upgrade patterns
+            find . -name "*.py" -exec sed -i 's/django.conf.urls.url/django.urls.re_path/g' {} \;
+            find . -name "*.py" -exec sed -i 's/from django.conf.urls import url/from django.urls import re_path/g' {} \;
+          fi
+          FILES_MIGRATED=$(find . -name "*.py" | wc -l)
+          ;;
+          
+        "custom")
+          echo "Performing custom migration..."
+          # Apply custom transformation rules from config
+          python3 -c "
+          import json
+          import re
+          import os
+          from pathlib import Path
+          
+          config = {{ inputs.migration_config | json }}
+          transformations = config.get('transformations', [])
+          files_migrated = 0
+          
+          for transform in transformations:
+              pattern = transform.get('pattern', '')
+              replacement = transform.get('replacement', '')
+              file_pattern = transform.get('files', '*')
+              
+              # Apply transformation to matching files
+              for file_path in Path('.').glob(file_pattern):
+                  if file_path.is_file():
+                      try:
+                          with open(file_path, 'r') as f:
+                              content = f.read()
+                          
+                          new_content = re.sub(pattern, replacement, content)
+                          
+                          if new_content != content:
+                              with open(file_path, 'w') as f:
+                                  f.write(new_content)
+                              files_migrated += 1
+                              print(f'Modified: {file_path}')
+                      except Exception as e:
+                          print(f'Error processing {file_path}: {e}')
+          
+          print(f'Files migrated: {files_migrated}')
+          "
+          FILES_MIGRATED=$(python3 -c "print({{ inputs.migration_config.transformations | length }} if {{ inputs.migration_config.transformations }} else 0)")
+          ;;
+          
+        *)
+          echo "Unknown migration type: {{ inputs.migration_type }}"
+          exit 1
+          ;;
+      esac
+      
+      echo "Migration completed. Files processed: $FILES_MIGRATED"
+      
+      # Output results
+      echo "{
+        \"files_migrated\": $FILES_MIGRATED,
+        \"migration_log\": \"$MIGRATION_LOG\",
+        \"workspace\": \"$(pwd)\"
+      }"
+    
+    working_directory: "{{ setup_workspace.outputs.workspace_path }}"
+    timeout: 1800  # 30 minutes
+    
+    outputs:
+      migration_result:
+        type: object
+        from: "json_parse(stdout)"
+      
+      files_migrated:
+        type: number
+        from: "migration_result.files_migrated"
+
+  # Step 6: Dry run analysis (if dry_run is true)
+  - id: dry_run_analysis
+    name: "Perform dry run analysis"
+    type: claude_code
+    depends_on: generate_migration_plan
+    when: "{{ inputs.dry_run }}"
+    
+    security_profile: "restricted"
+    prompt: |
+      This is a DRY RUN analysis for {{ inputs.migration_type }} migration.
+
+      **Migration Plan:**
+      {{ generate_migration_plan.outputs.migration_plan | json_pretty }}
+      
+      **Source Analysis:**
+      {{ analyze_source.outputs.source_analysis | json_pretty }}
+
+      Please analyze what would happen if this migration were executed:
+
+      1. **Files that would be modified**
+      2. **Specific changes that would be made**  
+      3. **Potential risks and issues**
+      4. **Estimated success probability**
+      5. **Recommended preparation steps**
+
+      Provide detailed analysis of the migration impact without actually performing changes.
+    
+    outputs:
+      dry_run_result:
+        type: object
+        from: "extract_json_block(response)"
+
+  # Step 7: Validate migration results
+  - id: validate_migration
+    name: "Validate migration results"
+    type: shell
+    depends_on: perform_migration
+    when: "{{ inputs.run_validation and not inputs.dry_run }}"
+    command: |
+      cd "${{ env.MIGRATION_WORKSPACE }}"
+      
+      echo "🔍 Validating migration results..."
+      
+      VALIDATION_RESULTS="validation_results.json"
+      SUCCESS=true
+      ISSUES=()
+      
+      # Run validation commands from migration plan
+      {% for cmd in generate_migration_plan.outputs.validation_commands %}
+      echo "Running: {{ cmd }}"
+      if ! {{ cmd }} 2>&1; then
+        SUCCESS=false
+        ISSUES+=("Validation failed: {{ cmd }}")
+      fi
+      {% endfor %}
+      
+      # Additional validation based on migration type
+      case "{{ inputs.migration_type }}" in
+        "python2to3")
+          echo "Validating Python 3 syntax..."
+          find . -name "*.py" -exec python3 -m py_compile {} \; 2>&1 || {
+            SUCCESS=false
+            ISSUES+=("Python syntax validation failed")
+          }
+          ;;
+          
+        "react-class-to-hooks")
+          echo "Validating React code..."
+          if command -v npm &> /dev/null && [[ -f "package.json" ]]; then
+            npm run build 2>&1 || {
+              SUCCESS=false  
+              ISSUES+=("React build validation failed")
+            }
+          fi
+          ;;
+          
+        "django-upgrade")
+          echo "Validating Django code..."
+          if [[ -f "manage.py" ]]; then
+            python manage.py check 2>&1 || {
+              SUCCESS=false
+              ISSUES+=("Django validation failed")
+            }
+          fi
+          ;;
+      esac
+      
+      # Check for syntax errors or common issues
+      echo "Checking for common migration issues..."
+      
+      # Create validation results
+      python3 -c "
+      import json
+      
+      issues = []
+      {% for issue in '${ISSUES[@]}' %}
+      issues.append('{{ issue }}')  
+      {% endfor %}
+      
+      results = {
+          'success': {{ SUCCESS | lower }},
+          'issues': issues,
+          'validation_completed': True
+      }
+      
+      with open('$VALIDATION_RESULTS', 'w') as f:
+          json.dump(results, f, indent=2)
+      
+      print(json.dumps(results))
+      "
+    
+    working_directory: "{{ setup_workspace.outputs.workspace_path }}"
+    timeout: 600
+    on_failure: "continue"
+    
+    outputs:
+      validation_result:
+        type: object
+        from: "json_parse(stdout)"
+      
+      success:
+        type: boolean
+        from: "validation_result.success"
+      
+      issues:
+        type: array
+        from: "validation_result.issues"
+
+  # Step 8: Copy migrated files back to original location
+  - id: apply_migration
+    name: "Apply migrated files to original location"
+    type: shell
+    depends_on: validate_migration
+    when: "{{ not inputs.dry_run and validate_migration.outputs.success }}"
+    command: |
+      echo "📁 Copying migrated files back to original location..."
+      
+      if [[ -f "{{ inputs.source_path }}" ]]; then
+        # Single file
+        cp "${{ env.MIGRATION_WORKSPACE }}/$(basename {{ inputs.source_path }})" "{{ inputs.source_path }}"
+        echo "Migrated file copied to {{ inputs.source_path }}"
+      else
+        # Directory
+        rsync -av --delete "${{ env.MIGRATION_WORKSPACE }}/" "{{ inputs.source_path }}/"
+        echo "Migrated directory synced to {{ inputs.source_path }}"
+      fi
+      
+      echo "Migration applied successfully"
+    
+    outputs:
+      apply_result:
+        type: string
+        from: "stdout"
+
+  # Step 9: Generate migration report
+  - id: generate_report
+    name: "Generate migration report"
+    type: template
+    depends_on:
+      - analyze_source
+      - generate_migration_plan
+      - perform_migration
+      - validate_migration
+    
+    template: |
+      # Code Migration Report
+
+      **Migration Type:** {{ inputs.migration_type }}
+      **Target Version:** {{ inputs.target_version }}
+      **Source Path:** {{ inputs.source_path }}
+      **Date:** {{ now() }}
+      **Dry Run:** {{ inputs.dry_run }}
+
+      ## Summary
+
+      | Metric | Value |
+      |--------|-------|
+      | Total Files Analyzed | {{ analyze_source.outputs.total_files }} |
+      {% if not inputs.dry_run %}
+      | Files Migrated | {{ perform_migration.outputs.files_migrated }} |
+      | Migration Success | {{ validate_migration.outputs.success | yesno('✅ Yes,❌ No') }} |
+      {% else %}
+      | Operation | Dry Run Analysis Only |
+      {% endif %}
+      | Complexity | {{ analyze_source.outputs.complexity | title }} |
+      | Estimated Duration | {{ generate_migration_plan.outputs.estimated_duration }} minutes |
+
+      ## Source Code Analysis
+
+      **File Types:**
+      {% for ext, count in analyze_source.outputs.source_analysis.file_types.items() %}
+      - `{{ ext }}`: {{ count }} files
+      {% endfor %}
+
+      **Complexity Assessment:** {{ analyze_source.outputs.complexity | title }}
+
+      ## Migration Plan
+
+      **Pre-migration Steps:**
+      {% for step in generate_migration_plan.outputs.migration_plan.migration_plan.pre_steps %}
+      - {{ step }}
+      {% endfor %}
+
+      **Migration Steps:**
+      {% for step in generate_migration_plan.outputs.migration_plan.migration_plan.migration_steps %}
+      - **{{ step.step_name }}**: {{ step.description }}
+      {% endfor %}
+
+      **Post-migration Steps:**
+      {% for step in generate_migration_plan.outputs.migration_plan.migration_plan.post_steps %}
+      - {{ step }}
+      {% endfor %}
+
+      ## Results
+
+      {% if inputs.dry_run %}
+      ### Dry Run Analysis
+      This was a dry run - no actual changes were made to the source code.
+
+      **What would have been changed:**
+      {{ dry_run_analysis.outputs.dry_run_result | json_pretty }}
+      {% else %}
+      ### Migration Results
+      - **Files Successfully Migrated:** {{ perform_migration.outputs.files_migrated }}
+      - **Validation Status:** {{ validate_migration.outputs.success | yesno('✅ Passed,❌ Failed') }}
+      
+      {% if validate_migration.outputs.issues %}
+      ### Issues Found
+      {% for issue in validate_migration.outputs.issues %}
+      - ❌ {{ issue }}
+      {% endfor %}
+      {% endif %}
+      {% endif %}
+
+      ## Risk Assessment
+
+      {% for risk in generate_migration_plan.outputs.migration_plan.risks %}
+      - **Risk:** {{ risk.risk }}
+        - **Impact:** {{ risk.impact | title }}
+        - **Mitigation:** {{ risk.mitigation }}
+      {% endfor %}
+
+      {% if inputs.create_backup %}
+      ## Backup Information
+
+      **Backup Location:** {{ create_backup.outputs.backup_path }}
+      
+      To rollback changes:
+      ```bash
+      {% if analyze_source.outputs.source_analysis.single_file %}
+      cp "{{ create_backup.outputs.backup_path }}" "{{ inputs.source_path }}"
+      {% else %}
+      rm -rf "{{ inputs.source_path }}"
+      cp -r "{{ create_backup.outputs.backup_path }}" "{{ inputs.source_path }}"
+      {% endif %}
+      ```
+      {% endif %}
+
+      ## Next Steps
+
+      {% if inputs.dry_run %}
+      1. Review the dry run analysis above
+      2. Run the migration with `dry_run: false` when ready
+      3. Ensure you have backups before proceeding
+      {% elif validate_migration.outputs.success %}
+      1. ✅ Migration completed successfully!
+      2. Run comprehensive tests on migrated code
+      3. Update documentation and deployment scripts
+      4. Remove backup files after verification ({{ create_backup.outputs.backup_path }})
+      {% else %}
+      1. ❌ Migration had issues - see validation results above
+      2. Review and fix the identified issues
+      3. Consider running migration again or manual fixes
+      4. Restore from backup if needed: {{ create_backup.outputs.backup_path }}
+      {% endif %}
+
+      ---
+      *Report generated by Claude Code Enterprise Workflow*
+    
+    output: "migration-report-{{ inputs.migration_type }}-{{ now() | date('%Y%m%d-%H%M%S') }}.md"
+
+  # Step 10: Cleanup workspace
+  - id: cleanup_workspace
+    name: "Clean up migration workspace"
+    type: shell
+    depends_on: apply_migration
+    when: "{{ env.CLEANUP_WORKSPACE == 'true' }}"
+    command: |
+      echo "🧹 Cleaning up migration workspace..."
+      rm -rf "${{ env.MIGRATION_WORKSPACE }}"
+      echo "Workspace cleaned up"
+    
+    on_failure: "continue"

@@ -1,0 +1,416 @@
+# Increase Test Coverage Workflow
+# Automatically analyzes code coverage and generates additional tests to reach target percentage
+
+name: increase-test-coverage
+version: "1.0"
+description: "Increase test coverage for a specific file to target percentage"
+author: "Enterprise Platform Team"
+tags:
+  - testing
+  - quality
+  - automation
+
+inputs:
+  target_file:
+    type: string
+    required: true
+    description: "Path to the file to increase coverage for"
+    validation:
+      pattern: "\\.(py|js|ts|go|java)$"
+  
+  target_coverage:
+    type: number
+    default: 90
+    description: "Target coverage percentage"
+    validation:
+      min: 0
+      max: 100
+  
+  test_framework:
+    type: string
+    default: "pytest"
+    description: "Testing framework to use"
+    validation:
+      enum: ["pytest", "jest", "go test", "junit"]
+  
+  create_pr:
+    type: boolean
+    default: false
+    description: "Create pull request with generated tests"
+
+outputs:
+  coverage_achieved:
+    type: number
+    description: "Final coverage percentage achieved"
+    from: "verify_coverage.outputs.coverage_percentage"
+  
+  tests_added:
+    type: number
+    description: "Number of test cases added"
+    from: "generate_tests.outputs.tests_count"
+  
+  pr_url:
+    type: string
+    description: "Pull request URL if created"
+    from: "create_pr.outputs.pr_url"
+
+environment:
+  PYTHONPATH: "{{ inputs.target_file | dirname }}"
+  TEST_MODE: "coverage_increase"
+
+timeout: 1800  # 30 minutes
+retry:
+  attempts: 2
+  delay: 60
+
+cache:
+  enabled: true
+  ttl: 86400  # 24 hours
+  version: "1.0"
+
+steps:
+  # Step 1: Run baseline coverage analysis
+  - id: baseline_coverage
+    name: "Analyze current test coverage"
+    type: shell
+    command: |
+      {% if inputs.test_framework == 'pytest' %}
+      pytest --cov={{ inputs.target_file }} --cov-report=xml --cov-report=term-missing
+      {% elif inputs.test_framework == 'jest' %}
+      npm test -- --coverage --collectCoverageFrom="{{ inputs.target_file }}"
+      {% elif inputs.test_framework == 'go test' %}
+      go test -coverprofile=coverage.out -covermode=atomic {{ inputs.target_file | dirname }}/...
+      go tool cover -html=coverage.out -o coverage.html
+      {% endif %}
+    
+    working_directory: "{{ inputs.target_file | dirname }}"
+    timeout: 300
+    
+    outputs:
+      coverage_xml:
+        type: file
+        from: "./coverage.xml"
+      
+      coverage_report:
+        type: string
+        from: "stdout"
+      
+      current_coverage:
+        type: number
+        from: "extract_coverage_percentage(coverage_xml)"
+    
+    cache:
+      key: "baseline-coverage-{{ hash(inputs.target_file) }}-{{ file_hash(inputs.target_file) }}"
+      ttl: 3600
+
+  # Step 2: Check if coverage improvement is needed
+  - id: check_coverage_gap
+    name: "Check if coverage improvement is needed"
+    type: assert
+    depends_on: baseline_coverage
+    condition: "{{ baseline_coverage.outputs.current_coverage < inputs.target_coverage }}"
+    message: "Coverage is already {{ baseline_coverage.outputs.current_coverage }}%, which meets target of {{ inputs.target_coverage }}%"
+    on_failure: "continue"
+
+  # Step 3: Analyze code structure and uncovered lines
+  - id: analyze_uncovered_code
+    name: "Analyze uncovered code sections"
+    type: shell
+    depends_on: baseline_coverage
+    when: "{{ baseline_coverage.outputs.current_coverage < inputs.target_coverage }}"
+    command: |
+      # Extract uncovered lines from coverage report
+      python3 -c "
+      import xml.etree.ElementTree as ET
+      import json
+
+      # Parse coverage XML
+      tree = ET.parse('{{ baseline_coverage.outputs.coverage_xml }}')
+      root = tree.getroot()
+      
+      uncovered_lines = []
+      for file_elem in root.findall('.//class[@filename=\"{{ inputs.target_file }}\"]'):
+          for line in file_elem.findall('lines/line'):
+              if line.get('hits') == '0':
+                  uncovered_lines.append({
+                      'line_number': int(line.get('number')),
+                      'source': line.text or ''
+                  })
+      
+      # Output as JSON
+      result = {
+          'uncovered_lines': uncovered_lines,
+          'uncovered_count': len(uncovered_lines),
+          'target_file': '{{ inputs.target_file }}'
+      }
+      
+      print(json.dumps(result, indent=2))
+      "
+    
+    outputs:
+      uncovered_analysis:
+        type: object
+        from: "json_parse(stdout)"
+    
+    cache:
+      key: "analysis-{{ hash(inputs.target_file) }}-{{ file_hash(inputs.target_file) }}"
+
+  # Step 4: Generate additional tests using Claude Code
+  - id: generate_tests
+    name: "Generate additional tests to improve coverage"
+    type: claude_code
+    depends_on: 
+      - baseline_coverage
+      - analyze_uncovered_code
+    when: "{{ baseline_coverage.outputs.current_coverage < inputs.target_coverage }}"
+    
+    security_profile: "restricted"
+    model: "claude-3-sonnet-20240229"
+    use_cache: true
+    max_tokens: 4000
+    temperature: 0.1
+    
+    prompt: |
+      I need to increase test coverage for the file `{{ inputs.target_file }}` from {{ baseline_coverage.outputs.current_coverage }}% to {{ inputs.target_coverage }}%.
+
+      **Current Coverage Report:**
+      {{ baseline_coverage.outputs.coverage_report }}
+
+      **Uncovered Code Analysis:**
+      {{ analyze_uncovered_code.outputs.uncovered_analysis | json_pretty }}
+
+      **Target File Content:**
+      ```
+      {{ file_content(inputs.target_file) }}
+      ```
+
+      **Existing Tests:**
+      {{ list_test_files(inputs.target_file | dirname) | join('\n') }}
+
+      Please generate additional test cases that will cover the uncovered lines. Focus on:
+
+      1. **Edge Cases**: Test boundary conditions and error scenarios
+      2. **Uncovered Branches**: Ensure all code paths are tested  
+      3. **Integration Points**: Test interactions between components
+      4. **Error Handling**: Test exception cases and error conditions
+
+      **Requirements:**
+      - Use {{ inputs.test_framework }} testing framework
+      - Follow existing test patterns and naming conventions
+      - Include descriptive test names and docstrings
+      - Add assertions that verify expected behavior
+      - Cover at least {{ inputs.target_coverage - baseline_coverage.outputs.current_coverage }}% additional coverage
+
+      **Output Format:**
+      Please provide the new test code and also create a summary JSON with:
+      ```json
+      {
+        "tests_count": <number of new tests>,
+        "estimated_coverage_increase": <percentage points>,
+        "test_categories": ["category1", "category2"]
+      }
+      ```
+
+      Generate comprehensive tests to achieve the target coverage.
+    
+    inputs:
+      - "{{ inputs.target_file }}"
+      - "{{ baseline_coverage.outputs.coverage_xml }}"
+    
+    outputs:
+      generated_tests:
+        type: string
+        from: "extract_code_blocks(response, 'python')"
+      
+      test_summary:
+        type: object
+        from: "extract_json_block(response)"
+      
+      tests_count:
+        type: number
+        from: "test_summary.tests_count"
+    
+    cache:
+      key: "generate-tests-{{ hash(inputs.target_file, inputs.target_coverage) }}-{{ file_hash(inputs.target_file) }}"
+      ttl: 7200  # 2 hours
+
+  # Step 5: Write generated tests to test file
+  - id: write_tests
+    name: "Write generated tests to test file"
+    type: template
+    depends_on: generate_tests
+    when: "{{ baseline_coverage.outputs.current_coverage < inputs.target_coverage }}"
+    
+    template: |
+      # Additional tests generated automatically to increase coverage
+      # Generated on: {{ now() }}
+      # Target coverage: {{ inputs.target_coverage }}%
+      # Previous coverage: {{ baseline_coverage.outputs.current_coverage }}%
+
+      {{ generate_tests.outputs.generated_tests }}
+    
+    output: "{{ inputs.target_file | replace('.py', '_additional_tests.py') }}"
+
+  # Step 6: Run tests to verify coverage improvement
+  - id: verify_coverage
+    name: "Verify coverage improvement"
+    type: shell
+    depends_on: write_tests
+    when: "{{ baseline_coverage.outputs.current_coverage < inputs.target_coverage }}"
+    
+    command: |
+      {% if inputs.test_framework == 'pytest' %}
+      pytest --cov={{ inputs.target_file }} --cov-report=xml --cov-report=term-missing
+      {% elif inputs.test_framework == 'jest' %}
+      npm test -- --coverage --collectCoverageFrom="{{ inputs.target_file }}"
+      {% endif %}
+    
+    working_directory: "{{ inputs.target_file | dirname }}"
+    timeout: 300
+    
+    outputs:
+      final_coverage_xml:
+        type: file
+        from: "./coverage.xml"
+      
+      final_coverage_report:
+        type: string
+        from: "stdout"
+      
+      coverage_percentage:
+        type: number
+        from: "extract_coverage_percentage(final_coverage_xml)"
+    
+    retry:
+      attempts: 3
+      delay: 10
+      on_failure: "retry"
+
+  # Step 7: Validate coverage target achieved
+  - id: validate_target
+    name: "Validate coverage target achieved"
+    type: assert
+    depends_on: verify_coverage
+    condition: "{{ verify_coverage.outputs.coverage_percentage >= inputs.target_coverage }}"
+    message: "Coverage target not achieved. Got {{ verify_coverage.outputs.coverage_percentage }}%, expected {{ inputs.target_coverage }}%"
+    on_failure: "warn"
+
+  # Step 8: Generate coverage improvement report
+  - id: generate_report
+    name: "Generate coverage improvement report"
+    type: template
+    depends_on: 
+      - baseline_coverage
+      - verify_coverage
+      - generate_tests
+    
+    template: |
+      # Test Coverage Improvement Report
+
+      **File:** {{ inputs.target_file }}
+      **Date:** {{ now() }}
+      **Framework:** {{ inputs.test_framework }}
+
+      ## Coverage Results
+
+      | Metric | Before | After | Improvement |
+      |--------|---------|-------|-------------|
+      | Coverage | {{ baseline_coverage.outputs.current_coverage }}% | {{ verify_coverage.outputs.coverage_percentage }}% | +{{ verify_coverage.outputs.coverage_percentage - baseline_coverage.outputs.current_coverage }}% |
+      | Tests Added | - | {{ generate_tests.outputs.tests_count }} | {{ generate_tests.outputs.tests_count }} |
+      | Target | {{ inputs.target_coverage }}% | {{ inputs.target_coverage }}% | {% if verify_coverage.outputs.coverage_percentage >= inputs.target_coverage %}✅ Achieved{% else %}❌ Not Achieved{% endif %} |
+
+      ## Test Categories Added
+      {% for category in generate_tests.outputs.test_summary.test_categories %}
+      - {{ category }}
+      {% endfor %}
+
+      ## Coverage Details
+
+      ### Before
+      ```
+      {{ baseline_coverage.outputs.coverage_report }}
+      ```
+
+      ### After  
+      ```
+      {{ verify_coverage.outputs.final_coverage_report }}
+      ```
+
+      ## Generated Test Summary
+      {{ generate_tests.outputs.test_summary | json_pretty }}
+
+      ---
+      *Report generated automatically by Claude Code Enterprise Workflow*
+    
+    output: "coverage-improvement-report-{{ now() | date('%Y%m%d-%H%M%S') }}.md"
+
+  # Step 9: Create pull request (optional)
+  - id: create_pr
+    name: "Create pull request with coverage improvements"
+    type: shell
+    depends_on: 
+      - verify_coverage
+      - generate_report
+    when: "{{ inputs.create_pr }}"
+    
+    command: |
+      # Stage all changes
+      git add {{ inputs.target_file | replace('.py', '_additional_tests.py') }}
+      git add coverage-improvement-report-*.md
+      
+      # Create commit
+      git commit -m "feat: increase test coverage for {{ inputs.target_file }}
+
+      - Added {{ generate_tests.outputs.tests_count }} new test cases
+      - Improved coverage from {{ baseline_coverage.outputs.current_coverage }}% to {{ verify_coverage.outputs.coverage_percentage }}%
+      - Target coverage: {{ inputs.target_coverage }}%
+      
+      Generated by: Claude Code Enterprise Workflow
+      "
+      
+      # Create pull request
+      PR_URL=$(gh pr create \
+        --title "Increase test coverage: {{ inputs.target_file | basename }}" \
+        --body "$(cat coverage-improvement-report-*.md)" \
+        --label "testing,coverage,automated" \
+        --assignee "@me")
+      
+      echo "Pull request created: $PR_URL"
+      echo "$PR_URL"
+    
+    timeout: 120
+    
+    outputs:
+      pr_url:
+        type: string
+        from: "extract_url(stdout)"
+      
+      commit_hash:
+        type: string
+        from: "git rev-parse HEAD"
+
+  # Step 10: Cleanup temporary files (optional)
+  - id: cleanup
+    name: "Clean up temporary files"
+    type: shell
+    depends_on: 
+      - generate_report
+    when: "{{ env.CLEANUP_TEMP_FILES == 'true' }}"
+    
+    command: |
+      # Clean up temporary coverage files
+      rm -f coverage.xml coverage.out coverage.html
+      echo "Cleanup completed"
+    
+    on_failure: "continue"
+
+# Workflow-level error handling
+on_error:
+  - send_notification:
+      channels: ["#engineering-alerts"]
+      message: "Test coverage workflow failed for {{ inputs.target_file }}"
+  
+  - create_issue:
+      title: "Test Coverage Workflow Failure"
+      body: "Automatic test coverage increase failed for {{ inputs.target_file }}"
+      labels: ["bug", "workflow", "testing"]
