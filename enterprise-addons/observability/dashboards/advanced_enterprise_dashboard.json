@@ -1,0 +1,353 @@
+{
+  "widgets": [
+    {
+      "type": "metric",
+      "x": 0,
+      "y": 0,
+      "width": 12,
+      "height": 6,
+      "properties": {
+        "metrics": [
+          [ "ClaudeCode/Enterprise", "active_users", { "stat": "Sum" } ],
+          [ ".", "daily_active_users", { "stat": "Sum" } ],
+          [ ".", "weekly_active_users", { "stat": "Sum" } ]
+        ],
+        "period": 300,
+        "stat": "Sum",
+        "region": "us-east-1",
+        "title": "User Activity Metrics",
+        "yAxis": {
+          "left": {
+            "min": 0
+          }
+        },
+        "annotations": {
+          "horizontal": [
+            {
+              "label": "Target DAU",
+              "value": 100
+            }
+          ]
+        }
+      }
+    },
+    {
+      "type": "metric",
+      "x": 12,
+      "y": 0,
+      "width": 12,
+      "height": 6,
+      "properties": {
+        "metrics": [
+          [ "ClaudeCode/Enterprise", "total_sessions", "SecurityProfile", "standard", { "stat": "Sum" } ],
+          [ "...", "restricted", { "stat": "Sum" } ],
+          [ "...", "elevated", { "stat": "Sum" } ],
+          [ "...", "plan-only", { "stat": "Sum" } ]
+        ],
+        "period": 300,
+        "stat": "Sum",
+        "region": "us-east-1",
+        "title": "Sessions by Security Profile",
+        "yAxis": {
+          "left": {
+            "min": 0
+          }
+        },
+        "view": "timeSeries",
+        "stacked": true
+      }
+    },
+    {
+      "type": "metric",
+      "x": 0,
+      "y": 6,
+      "width": 8,
+      "height": 6,
+      "properties": {
+        "metrics": [
+          [ "ClaudeCode/Enterprise", "total_tokens", "Team", "engineering", { "stat": "Sum" } ],
+          [ "...", "product", { "stat": "Sum" } ],
+          [ "...", "design", { "stat": "Sum" } ],
+          [ "...", "data-science", { "stat": "Sum" } ],
+          [ "...", "platform", { "stat": "Sum" } ]
+        ],
+        "period": 3600,
+        "stat": "Sum",
+        "region": "us-east-1",
+        "title": "Token Usage by Team",
+        "yAxis": {
+          "left": {
+            "min": 0
+          }
+        },
+        "view": "timeSeries",
+        "stacked": true
+      }
+    },
+    {
+      "type": "metric",
+      "x": 8,
+      "y": 6,
+      "width": 8,
+      "height": 6,
+      "properties": {
+        "metrics": [
+          [ "ClaudeCode/Enterprise", "total_cost_usd", "Team", "engineering", { "stat": "Sum" } ],
+          [ "...", "product", { "stat": "Sum" } ],
+          [ "...", "design", { "stat": "Sum" } ],
+          [ "...", "data-science", { "stat": "Sum" } ],
+          [ "...", "platform", { "stat": "Sum" } ]
+        ],
+        "period": 3600,
+        "stat": "Sum",
+        "region": "us-east-1",
+        "title": "Cost by Team (USD)",
+        "yAxis": {
+          "left": {
+            "min": 0
+          }
+        },
+        "view": "timeSeries",
+        "stacked": true
+      }
+    },
+    {
+      "type": "metric",
+      "x": 16,
+      "y": 6,
+      "width": 8,
+      "height": 6,
+      "properties": {
+        "metrics": [
+          [ "ClaudeCode/Enterprise", "cache_hit_rate", { "stat": "Average" } ],
+          [ ".", "cache_miss_rate", { "stat": "Average" } ]
+        ],
+        "period": 300,
+        "stat": "Average",
+        "region": "us-east-1",
+        "title": "Cache Performance",
+        "yAxis": {
+          "left": {
+            "min": 0,
+            "max": 100
+          }
+        },
+        "annotations": {
+          "horizontal": [
+            {
+              "label": "Target Cache Hit Rate",
+              "value": 80
+            }
+          ]
+        }
+      }
+    },
+    {
+      "type": "metric",
+      "x": 0,
+      "y": 12,
+      "width": 12,
+      "height": 6,
+      "properties": {
+        "metrics": [
+          [ "ClaudeCode/Enterprise", "request_latency_p50", { "stat": "Average" } ],
+          [ ".", "request_latency_p95", { "stat": "Average" } ],
+          [ ".", "request_latency_p99", { "stat": "Average" } ]
+        ],
+        "period": 300,
+        "stat": "Average",
+        "region": "us-east-1",
+        "title": "Request Latency (ms)",
+        "yAxis": {
+          "left": {
+            "min": 0
+          }
+        },
+        "annotations": {
+          "horizontal": [
+            {
+              "label": "SLA P95",
+              "value": 5000
+            }
+          ]
+        }
+      }
+    },
+    {
+      "type": "metric",
+      "x": 12,
+      "y": 12,
+      "width": 12,
+      "height": 6,
+      "properties": {
+        "metrics": [
+          [ "ClaudeCode/Enterprise", "error_rate", "ErrorType", "policy_violation", { "stat": "Sum" } ],
+          [ "...", "authentication_failure", { "stat": "Sum" } ],
+          [ "...", "model_error", { "stat": "Sum" } ],
+          [ "...", "system_error", { "stat": "Sum" } ]
+        ],
+        "period": 300,
+        "stat": "Sum",
+        "region": "us-east-1",
+        "title": "Error Rate by Type",
+        "yAxis": {
+          "left": {
+            "min": 0
+          }
+        },
+        "view": "timeSeries",
+        "stacked": true
+      }
+    },
+    {
+      "type": "metric",
+      "x": 0,
+      "y": 18,
+      "width": 6,
+      "height": 6,
+      "properties": {
+        "metrics": [
+          [ "ClaudeCode/Enterprise", "productivity_score", "Team", "engineering", { "stat": "Average" } ],
+          [ "...", "product", { "stat": "Average" } ],
+          [ "...", "design", { "stat": "Average" } ],
+          [ "...", "data-science", { "stat": "Average" } ]
+        ],
+        "period": 3600,
+        "stat": "Average",
+        "region": "us-east-1",
+        "title": "Productivity Score by Team",
+        "yAxis": {
+          "left": {
+            "min": 0,
+            "max": 10
+          }
+        }
+      }
+    },
+    {
+      "type": "metric",
+      "x": 6,
+      "y": 18,
+      "width": 6,
+      "height": 6,
+      "properties": {
+        "metrics": [
+          [ "ClaudeCode/Enterprise", "compliance_score", "SecurityProfile", "plan-only", { "stat": "Average" } ],
+          [ "...", "restricted", { "stat": "Average" } ],
+          [ "...", "standard", { "stat": "Average" } ],
+          [ "...", "elevated", { "stat": "Average" } ]
+        ],
+        "period": 3600,
+        "stat": "Average",
+        "region": "us-east-1",
+        "title": "Compliance Score by Profile",
+        "yAxis": {
+          "left": {
+            "min": 0,
+            "max": 100
+          }
+        },
+        "annotations": {
+          "horizontal": [
+            {
+              "label": "Compliance Target",
+              "value": 95
+            }
+          ]
+        }
+      }
+    },
+    {
+      "type": "metric",
+      "x": 12,
+      "y": 18,
+      "width": 6,
+      "height": 6,
+      "properties": {
+        "metrics": [
+          [ "ClaudeCode/Enterprise", "session_success_rate", { "stat": "Average" } ],
+          [ ".", "task_completion_rate", { "stat": "Average" } ]
+        ],
+        "period": 300,
+        "stat": "Average",
+        "region": "us-east-1",
+        "title": "Success Metrics",
+        "yAxis": {
+          "left": {
+            "min": 0,
+            "max": 100
+          }
+        },
+        "annotations": {
+          "horizontal": [
+            {
+              "label": "Target Success Rate",
+              "value": 95
+            }
+          ]
+        }
+      }
+    },
+    {
+      "type": "metric",
+      "x": 18,
+      "y": 18,
+      "width": 6,
+      "height": 6,
+      "properties": {
+        "metrics": [
+          [ "ClaudeCode/Enterprise", "cost_per_user_daily", { "stat": "Average" } ],
+          [ ".", "cost_savings_cache", { "stat": "Sum" } ]
+        ],
+        "period": 3600,
+        "stat": "Average",
+        "region": "us-east-1",
+        "title": "Cost Efficiency",
+        "yAxis": {
+          "left": {
+            "min": 0
+          }
+        }
+      }
+    },
+    {
+      "type": "log",
+      "x": 0,
+      "y": 24,
+      "width": 24,
+      "height": 6,
+      "properties": {
+        "query": "SOURCE '/aws/claude-code/enterprise-logs'\n| fields @timestamp, user_team, security_profile, operation_type, success, error_message\n| filter operation_type = \"policy_violation\"\n| sort @timestamp desc\n| limit 20",
+        "region": "us-east-1",
+        "title": "Recent Policy Violations",
+        "view": "table"
+      }
+    },
+    {
+      "type": "log",
+      "x": 0,
+      "y": 30,
+      "width": 12,
+      "height": 6,
+      "properties": {
+        "query": "SOURCE '/aws/claude-code/enterprise-logs'\n| fields @timestamp, user_team, tokens_total, cost_estimate_usd\n| filter tokens_total > 10000\n| sort @timestamp desc\n| limit 10",
+        "region": "us-east-1",
+        "title": "High Token Usage Sessions",
+        "view": "table"
+      }
+    },
+    {
+      "type": "log",
+      "x": 12,
+      "y": 30,
+      "width": 12,
+      "height": 6,
+      "properties": {
+        "query": "SOURCE '/aws/claude-code/enterprise-logs'\n| fields @timestamp, user_team, model_id, cache_hit, latency_ms\n| filter latency_ms > 10000\n| sort @timestamp desc\n| limit 10",
+        "region": "us-east-1",
+        "title": "High Latency Requests",
+        "view": "table"
+      }
+    }
+  ]
+}

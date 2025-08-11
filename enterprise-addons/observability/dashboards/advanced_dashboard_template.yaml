@@ -1,0 +1,629 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Description: 'Advanced enterprise CloudWatch dashboard for Claude Code with team/project breakdowns and anomaly detection'
+
+Parameters:
+  DashboardName:
+    Type: String
+    Default: ClaudeCodeEnterpriseAdvanced
+    Description: Name for the advanced CloudWatch dashboard
+  
+  MetricNamespace:
+    Type: String
+    Default: ClaudeCode/Enterprise
+    Description: CloudWatch namespace for Claude Code enterprise metrics
+  
+  BedrockRegion:
+    Type: String
+    Default: us-east-1
+    Description: Primary region where Bedrock is accessed
+  
+  TokenCostPerMillion:
+    Type: Number
+    Default: 15.00
+    Description: Cost per million tokens (adjust based on your Bedrock pricing)
+  
+  AlertEmail:
+    Type: String
+    Default: ''
+    Description: Email address for anomaly detection alerts (optional)
+    
+  EnableAnomalyDetection:
+    Type: String
+    Default: 'true'
+    AllowedValues: ['true', 'false']
+    Description: Enable CloudWatch anomaly detection for key metrics
+
+Conditions:
+  HasAlertEmail: !Not [!Equals [!Ref AlertEmail, '']]
+  AnomalyDetectionEnabled: !Equals [!Ref EnableAnomalyDetection, 'true']
+
+Resources:
+  # SNS Topic for Advanced Alerts
+  AdvancedAlertTopic:
+    Type: AWS::SNS::Topic
+    Condition: HasAlertEmail
+    Properties:
+      TopicName: !Sub '${DashboardName}-Advanced-Alerts'
+      DisplayName: Claude Code Enterprise Advanced Alerts
+      Subscription:
+        - Endpoint: !Ref AlertEmail
+          Protocol: email
+
+  # Advanced Enterprise Dashboard
+  AdvancedEnterpriseDashboard:
+    Type: AWS::CloudWatch::Dashboard
+    Properties:
+      DashboardName: !Ref DashboardName
+      DashboardBody: !Sub |
+        {
+          "widgets": [
+            {
+              "type": "metric",
+              "x": 0,
+              "y": 0,
+              "width": 12,
+              "height": 6,
+              "properties": {
+                "metrics": [
+                  [ "${MetricNamespace}", "active_users", { "stat": "Sum", "period": 300 } ],
+                  [ ".", "daily_active_users", { "stat": "Sum", "period": 86400 } ],
+                  [ ".", "weekly_active_users", { "stat": "Sum", "period": 604800 } ]
+                ],
+                "period": 300,
+                "stat": "Sum",
+                "region": "${AWS::Region}",
+                "title": "👥 User Activity Overview",
+                "yAxis": {
+                  "left": {
+                    "min": 0
+                  }
+                },
+                "annotations": {
+                  "horizontal": [
+                    {
+                      "label": "Growth Target",
+                      "value": 100
+                    }
+                  ]
+                }
+              }
+            },
+            {
+              "type": "metric",
+              "x": 12,
+              "y": 0,
+              "width": 12,
+              "height": 6,
+              "properties": {
+                "metrics": [
+                  [ "${MetricNamespace}", "total_sessions", "SecurityProfile", "standard", { "stat": "Sum" } ],
+                  [ "...", "restricted", { "stat": "Sum" } ],
+                  [ "...", "elevated", { "stat": "Sum" } ],
+                  [ "...", "plan-only", { "stat": "Sum" } ]
+                ],
+                "period": 300,
+                "stat": "Sum",
+                "region": "${AWS::Region}",
+                "title": "🔒 Sessions by Security Profile",
+                "yAxis": {
+                  "left": {
+                    "min": 0
+                  }
+                },
+                "view": "timeSeries",
+                "stacked": true
+              }
+            },
+            {
+              "type": "metric",
+              "x": 0,
+              "y": 6,
+              "width": 8,
+              "height": 6,
+              "properties": {
+                "metrics": [
+                  [ "${MetricNamespace}", "total_tokens", "Team", "engineering", { "stat": "Sum" } ],
+                  [ "...", "product", { "stat": "Sum" } ],
+                  [ "...", "design", { "stat": "Sum" } ],
+                  [ "...", "data-science", { "stat": "Sum" } ],
+                  [ "...", "platform", { "stat": "Sum" } ],
+                  [ "...", "unknown", { "stat": "Sum" } ]
+                ],
+                "period": 3600,
+                "stat": "Sum",
+                "region": "${AWS::Region}",
+                "title": "📊 Token Usage by Team",
+                "yAxis": {
+                  "left": {
+                    "min": 0
+                  }
+                },
+                "view": "timeSeries",
+                "stacked": true
+              }
+            },
+            {
+              "type": "metric",
+              "x": 8,
+              "y": 6,
+              "width": 8,
+              "height": 6,
+              "properties": {
+                "metrics": [
+                  [ "${MetricNamespace}", "total_cost_usd", "Team", "engineering", { "stat": "Sum" } ],
+                  [ "...", "product", { "stat": "Sum" } ],
+                  [ "...", "design", { "stat": "Sum" } ],
+                  [ "...", "data-science", { "stat": "Sum" } ],
+                  [ "...", "platform", { "stat": "Sum" } ],
+                  [ "...", "unknown", { "stat": "Sum" } ]
+                ],
+                "period": 3600,
+                "stat": "Sum",
+                "region": "${AWS::Region}",
+                "title": "💰 Cost by Team (USD)",
+                "yAxis": {
+                  "left": {
+                    "min": 0
+                  }
+                },
+                "view": "timeSeries",
+                "stacked": true
+              }
+            },
+            {
+              "type": "metric",
+              "x": 16,
+              "y": 6,
+              "width": 8,
+              "height": 6,
+              "properties": {
+                "metrics": [
+                  [ "${MetricNamespace}", "cache_hit_rate", { "stat": "Average" } ],
+                  [ ".", "cache_miss_rate", { "stat": "Average" } ]
+                ],
+                "period": 300,
+                "stat": "Average",
+                "region": "${AWS::Region}",
+                "title": "⚡ Cache Performance",
+                "yAxis": {
+                  "left": {
+                    "min": 0,
+                    "max": 100
+                  }
+                },
+                "annotations": {
+                  "horizontal": [
+                    {
+                      "label": "Efficiency Target",
+                      "value": 80
+                    }
+                  ]
+                }
+              }
+            },
+            {
+              "type": "metric",
+              "x": 0,
+              "y": 12,
+              "width": 12,
+              "height": 6,
+              "properties": {
+                "metrics": [
+                  [ "${MetricNamespace}", "request_latency_p50", { "stat": "Average" } ],
+                  [ ".", "request_latency_p95", { "stat": "Average" } ],
+                  [ ".", "request_latency_p99", { "stat": "Average" } ]
+                ],
+                "period": 300,
+                "stat": "Average",
+                "region": "${AWS::Region}",
+                "title": "⏱️ Request Latency Percentiles (ms)",
+                "yAxis": {
+                  "left": {
+                    "min": 0
+                  }
+                },
+                "annotations": {
+                  "horizontal": [
+                    {
+                      "label": "SLA P95",
+                      "value": 5000
+                    }
+                  ]
+                }
+              }
+            },
+            {
+              "type": "metric",
+              "x": 12,
+              "y": 12,
+              "width": 12,
+              "height": 6,
+              "properties": {
+                "metrics": [
+                  [ "${MetricNamespace}", "error_rate", "ErrorType", "policy_violation", { "stat": "Sum" } ],
+                  [ "...", "authentication_failure", { "stat": "Sum" } ],
+                  [ "...", "model_error", { "stat": "Sum" } ],
+                  [ "...", "system_error", { "stat": "Sum" } ],
+                  [ "...", "rate_limit", { "stat": "Sum" } ]
+                ],
+                "period": 300,
+                "stat": "Sum",
+                "region": "${AWS::Region}",
+                "title": "🚨 Error Rate by Type",
+                "yAxis": {
+                  "left": {
+                    "min": 0
+                  }
+                },
+                "view": "timeSeries",
+                "stacked": true
+              }
+            },
+            {
+              "type": "metric",
+              "x": 0,
+              "y": 18,
+              "width": 6,
+              "height": 6,
+              "properties": {
+                "metrics": [
+                  [ "${MetricNamespace}", "productivity_score", "Team", "engineering", { "stat": "Average" } ],
+                  [ "...", "product", { "stat": "Average" } ],
+                  [ "...", "design", { "stat": "Average" } ],
+                  [ "...", "data-science", { "stat": "Average" } ]
+                ],
+                "period": 3600,
+                "stat": "Average",
+                "region": "${AWS::Region}",
+                "title": "📈 Productivity Score by Team",
+                "yAxis": {
+                  "left": {
+                    "min": 0,
+                    "max": 10
+                  }
+                }
+              }
+            },
+            {
+              "type": "metric",
+              "x": 6,
+              "y": 18,
+              "width": 6,
+              "height": 6,
+              "properties": {
+                "metrics": [
+                  [ "${MetricNamespace}", "compliance_score", "SecurityProfile", "plan-only", { "stat": "Average" } ],
+                  [ "...", "restricted", { "stat": "Average" } ],
+                  [ "...", "standard", { "stat": "Average" } ],
+                  [ "...", "elevated", { "stat": "Average" } ]
+                ],
+                "period": 3600,
+                "stat": "Average",
+                "region": "${AWS::Region}",
+                "title": "✅ Compliance Score by Profile",
+                "yAxis": {
+                  "left": {
+                    "min": 0,
+                    "max": 100
+                  }
+                },
+                "annotations": {
+                  "horizontal": [
+                    {
+                      "label": "Compliance Target",
+                      "value": 95
+                    }
+                  ]
+                }
+              }
+            },
+            {
+              "type": "metric",
+              "x": 12,
+              "y": 18,
+              "width": 6,
+              "height": 6,
+              "properties": {
+                "metrics": [
+                  [ "${MetricNamespace}", "session_success_rate", { "stat": "Average" } ],
+                  [ ".", "task_completion_rate", { "stat": "Average" } ]
+                ],
+                "period": 300,
+                "stat": "Average",
+                "region": "${AWS::Region}",
+                "title": "🎯 Success Metrics",
+                "yAxis": {
+                  "left": {
+                    "min": 0,
+                    "max": 100
+                  }
+                },
+                "annotations": {
+                  "horizontal": [
+                    {
+                      "label": "Target Success Rate",
+                      "value": 95
+                    }
+                  ]
+                }
+              }
+            },
+            {
+              "type": "metric",
+              "x": 18,
+              "y": 18,
+              "width": 6,
+              "height": 6,
+              "properties": {
+                "metrics": [
+                  [ "${MetricNamespace}", "cost_per_user_daily", { "stat": "Average" } ],
+                  [ ".", "cost_savings_cache", { "stat": "Sum" } ]
+                ],
+                "period": 3600,
+                "stat": "Average",
+                "region": "${AWS::Region}",
+                "title": "💸 Cost Efficiency",
+                "yAxis": {
+                  "left": {
+                    "min": 0
+                  }
+                }
+              }
+            },
+            {
+              "type": "log",
+              "x": 0,
+              "y": 24,
+              "width": 24,
+              "height": 6,
+              "properties": {
+                "query": "SOURCE '/aws/claude-code/enterprise-logs'\\n| fields @timestamp, user_team, security_profile, operation_type, success, error_message\\n| filter operation_type = \\"security_policy_violation\\"\\n| sort @timestamp desc\\n| limit 20",
+                "region": "${AWS::Region}",
+                "title": "🚫 Recent Policy Violations",
+                "view": "table"
+              }
+            },
+            {
+              "type": "log",
+              "x": 0,
+              "y": 30,
+              "width": 12,
+              "height": 6,
+              "properties": {
+                "query": "SOURCE '/aws/claude-code/enterprise-logs'\\n| fields @timestamp, user_team, tokens_total, cost_estimate_usd, model_id\\n| filter tokens_total > 10000\\n| sort tokens_total desc\\n| limit 10",
+                "region": "${AWS::Region}",
+                "title": "📊 High Token Usage Sessions",
+                "view": "table"
+              }
+            },
+            {
+              "type": "log",
+              "x": 12,
+              "y": 30,
+              "width": 12,
+              "height": 6,
+              "properties": {
+                "query": "SOURCE '/aws/claude-code/enterprise-logs'\\n| fields @timestamp, user_team, model_id, cache_hit, latency_ms\\n| filter latency_ms > 10000\\n| sort latency_ms desc\\n| limit 10",
+                "region": "${AWS::Region}",
+                "title": "⏱️ High Latency Requests",
+                "view": "table"
+              }
+            }
+          ]
+        }
+
+  # Anomaly Detection for Key Metrics
+  DailyActiveUsersAnomalyDetector:
+    Type: AWS::CloudWatch::AnomalyDetector
+    Condition: AnomalyDetectionEnabled
+    Properties:
+      MetricName: daily_active_users
+      Namespace: !Ref MetricNamespace
+      Stat: Sum
+
+  TokenUsageAnomalyDetector:
+    Type: AWS::CloudWatch::AnomalyDetector
+    Condition: AnomalyDetectionEnabled
+    Properties:
+      MetricName: total_tokens
+      Namespace: !Ref MetricNamespace
+      Stat: Sum
+
+  CostAnomalyDetector:
+    Type: AWS::CloudWatch::AnomalyDetector
+    Condition: AnomalyDetectionEnabled
+    Properties:
+      MetricName: total_cost_usd
+      Namespace: !Ref MetricNamespace
+      Stat: Sum
+
+  ErrorRateAnomalyDetector:
+    Type: AWS::CloudWatch::AnomalyDetector
+    Condition: AnomalyDetectionEnabled
+    Properties:
+      MetricName: error_rate
+      Namespace: !Ref MetricNamespace
+      Stat: Sum
+
+  # Anomaly Detection Alarms
+  DailyActiveUsersAnomalyAlarm:
+    Type: AWS::CloudWatch::Alarm
+    Condition: AnomalyDetectionEnabled
+    Properties:
+      AlarmName: !Sub '${DashboardName}-DAU-Anomaly'
+      AlarmDescription: 'Anomaly detection for Daily Active Users'
+      MetricName: daily_active_users
+      Namespace: !Ref MetricNamespace
+      Statistic: Sum
+      Period: 86400
+      EvaluationPeriods: 1
+      Threshold: 2
+      ComparisonOperator: LessThanLowerOrGreaterThanUpperThreshold
+      TreatMissingData: breaching
+      Metrics:
+        - Id: m1
+          ReturnData: true
+          MetricStat:
+            Metric:
+              MetricName: daily_active_users
+              Namespace: !Ref MetricNamespace
+            Period: 86400
+            Stat: Sum
+        - Id: ad1
+          Expression: ANOMALY_DETECTOR_FUNCTION(m1, 2)
+      AlarmActions:
+        - !If [HasAlertEmail, !Ref AdvancedAlertTopic, !Ref 'AWS::NoValue']
+
+  TokenUsageAnomalyAlarm:
+    Type: AWS::CloudWatch::Alarm
+    Condition: AnomalyDetectionEnabled
+    Properties:
+      AlarmName: !Sub '${DashboardName}-Token-Usage-Anomaly'
+      AlarmDescription: 'Anomaly detection for Token Usage'
+      MetricName: total_tokens
+      Namespace: !Ref MetricNamespace
+      Statistic: Sum
+      Period: 3600
+      EvaluationPeriods: 2
+      Threshold: 2
+      ComparisonOperator: LessThanLowerOrGreaterThanUpperThreshold
+      TreatMissingData: breaching
+      Metrics:
+        - Id: m1
+          ReturnData: true
+          MetricStat:
+            Metric:
+              MetricName: total_tokens
+              Namespace: !Ref MetricNamespace
+            Period: 3600
+            Stat: Sum
+        - Id: ad1
+          Expression: ANOMALY_DETECTOR_FUNCTION(m1, 2)
+      AlarmActions:
+        - !If [HasAlertEmail, !Ref AdvancedAlertTopic, !Ref 'AWS::NoValue']
+
+  CostAnomalyAlarm:
+    Type: AWS::CloudWatch::Alarm
+    Condition: AnomalyDetectionEnabled
+    Properties:
+      AlarmName: !Sub '${DashboardName}-Cost-Anomaly'
+      AlarmDescription: 'Anomaly detection for Cost Usage'
+      MetricName: total_cost_usd
+      Namespace: !Ref MetricNamespace
+      Statistic: Sum
+      Period: 3600
+      EvaluationPeriods: 2
+      Threshold: 2
+      ComparisonOperator: LessThanLowerOrGreaterThanUpperThreshold
+      TreatMissingData: breaching
+      Metrics:
+        - Id: m1
+          ReturnData: true
+          MetricStat:
+            Metric:
+              MetricName: total_cost_usd
+              Namespace: !Ref MetricNamespace
+            Period: 3600
+            Stat: Sum
+        - Id: ad1
+          Expression: ANOMALY_DETECTOR_FUNCTION(m1, 2)
+      AlarmActions:
+        - !If [HasAlertEmail, !Ref AdvancedAlertTopic, !Ref 'AWS::NoValue']
+
+  ErrorRateAnomalyAlarm:
+    Type: AWS::CloudWatch::Alarm
+    Condition: AnomalyDetectionEnabled
+    Properties:
+      AlarmName: !Sub '${DashboardName}-Error-Rate-Anomaly'
+      AlarmDescription: 'Anomaly detection for Error Rate'
+      MetricName: error_rate
+      Namespace: !Ref MetricNamespace
+      Statistic: Sum
+      Period: 300
+      EvaluationPeriods: 3
+      Threshold: 2
+      ComparisonOperator: LessThanLowerOrGreaterThanUpperThreshold
+      TreatMissingData: notBreaching
+      Metrics:
+        - Id: m1
+          ReturnData: true
+          MetricStat:
+            Metric:
+              MetricName: error_rate
+              Namespace: !Ref MetricNamespace
+            Period: 300
+            Stat: Sum
+        - Id: ad1
+          Expression: ANOMALY_DETECTOR_FUNCTION(m1, 2)
+      AlarmActions:
+        - !If [HasAlertEmail, !Ref AdvancedAlertTopic, !Ref 'AWS::NoValue']
+
+  # High-Threshold Static Alarms
+  HighTokenUsageAlarm:
+    Type: AWS::CloudWatch::Alarm
+    Properties:
+      AlarmName: !Sub '${DashboardName}-High-Token-Usage'
+      AlarmDescription: 'High token usage per hour threshold breach'
+      MetricName: total_tokens
+      Namespace: !Ref MetricNamespace
+      Statistic: Sum
+      Period: 3600
+      EvaluationPeriods: 1
+      Threshold: 1000000  # 1M tokens per hour
+      ComparisonOperator: GreaterThanThreshold
+      TreatMissingData: notBreaching
+      AlarmActions:
+        - !If [HasAlertEmail, !Ref AdvancedAlertTopic, !Ref 'AWS::NoValue']
+
+  HighErrorRateAlarm:
+    Type: AWS::CloudWatch::Alarm
+    Properties:
+      AlarmName: !Sub '${DashboardName}-High-Error-Rate'
+      AlarmDescription: 'High error rate threshold breach'
+      MetricName: error_rate
+      Namespace: !Ref MetricNamespace
+      Statistic: Sum
+      Period: 300
+      EvaluationPeriods: 3
+      Threshold: 10  # 10 errors in 5 minutes
+      ComparisonOperator: GreaterThanThreshold
+      TreatMissingData: notBreaching
+      AlarmActions:
+        - !If [HasAlertEmail, !Ref AdvancedAlertTopic, !Ref 'AWS::NoValue']
+
+  PolicyViolationAlarm:
+    Type: AWS::CloudWatch::Alarm
+    Properties:
+      AlarmName: !Sub '${DashboardName}-Policy-Violations'
+      AlarmDescription: 'Security policy violations detected'
+      MetricName: error_rate
+      Namespace: !Ref MetricNamespace
+      Statistic: Sum
+      Period: 300
+      EvaluationPeriods: 1
+      Threshold: 1
+      ComparisonOperator: GreaterThanOrEqualToThreshold
+      TreatMissingData: notBreaching
+      Dimensions:
+        - Name: ErrorType
+          Value: policy_violation
+      AlarmActions:
+        - !If [HasAlertEmail, !Ref AdvancedAlertTopic, !Ref 'AWS::NoValue']
+
+Outputs:
+  DashboardURL:
+    Description: URL for the advanced enterprise CloudWatch dashboard
+    Value: !Sub 'https://${AWS::Region}.console.aws.amazon.com/cloudwatch/home?region=${AWS::Region}#dashboards:name=${DashboardName}'
+    
+  DashboardName:
+    Description: Name of the created dashboard
+    Value: !Ref DashboardName
+    Export:
+      Name: !Sub '${AWS::StackName}-DashboardName'
+    
+  AlertTopicArn:
+    Condition: HasAlertEmail
+    Description: ARN of the SNS topic for advanced alerts
+    Value: !Ref AdvancedAlertTopic
+    Export:
+      Name: !Sub '${AWS::StackName}-AlertTopic'

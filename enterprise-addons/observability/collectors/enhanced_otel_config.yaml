@@ -1,0 +1,365 @@
+# Enhanced OpenTelemetry Collector Configuration for Claude Code Enterprise
+# Provides comprehensive telemetry collection, processing, and export
+# with advanced user attribution, cost tracking, and anomaly detection
+
+receivers:
+  # OTLP receiver for traces and metrics from Claude Code clients
+  otlp:
+    protocols:
+      grpc:
+        endpoint: 0.0.0.0:4317
+      http:
+        endpoint: 0.0.0.0:4318
+        cors:
+          allowed_origins:
+            - "http://localhost:3000"
+            - "https://*.company.com"
+          allowed_headers:
+            - "*"
+          max_age: 7200
+
+  # Prometheus receiver for additional metrics
+  prometheus:
+    config:
+      scrape_configs:
+        - job_name: 'otel-collector'
+          scrape_interval: 30s
+          static_configs:
+            - targets: ['localhost:8888']
+          metrics_path: /metrics
+          
+        - job_name: 'claude-code-enterprise'
+          scrape_interval: 15s
+          static_configs:
+            - targets: ['localhost:9090']
+          metrics_path: /metrics
+
+  # CloudWatch receiver for existing AWS metrics
+  awscloudwatch:
+    region: us-east-1
+    metrics:
+      - metric_name: "AWS/Bedrock/InvocationsCount"
+        dimensions:
+          - name: "ModelId"
+            value: "*"
+        statistic: "Sum"
+      - metric_name: "AWS/Bedrock/InputTokens"
+        dimensions:
+          - name: "ModelId"  
+            value: "*"
+        statistic: "Sum"
+      - metric_name: "AWS/Bedrock/OutputTokens"
+        dimensions:
+          - name: "ModelId"
+            value: "*"
+        statistic: "Sum"
+
+processors:
+  # Batch processor for efficient data handling
+  batch:
+    timeout: 1s
+    send_batch_size: 1024
+    send_batch_max_size: 2048
+    
+  # Memory limiter to prevent OOM
+  memory_limiter:
+    limit_mib: 512
+    spike_limit_mib: 256
+    check_interval: 5s
+    
+  # Resource processor to add consistent resource attributes
+  resource:
+    attributes:
+      - key: service.name
+        value: claude-code-enterprise
+        action: upsert
+      - key: service.version
+        value: ${SERVICE_VERSION}
+        action: upsert
+      - key: deployment.environment
+        value: ${DEPLOYMENT_ENVIRONMENT}
+        action: upsert
+      - key: cluster.name
+        value: ${ECS_CLUSTER_NAME}
+        action: upsert
+        
+  # Attributes processor for user attribution and data enrichment
+  attributes:
+    actions:
+      # Hash sensitive user identifiers for privacy
+      - key: claude.user.id
+        action: hash
+        
+      # Extract team from user email domain if not provided
+      - key: claude.user.team
+        action: extract
+        pattern: '@(?P<domain>.+)$'
+        from_attribute: claude.user.email
+        
+      # Add cost center based on team mapping
+      - key: claude.cost.center
+        action: insert
+        from_attribute: claude.user.team
+        
+      # Calculate token cost estimates
+      - key: claude.cost.input_tokens_cost
+        action: multiply
+        from_attribute: claude.request.tokens.input
+        value: 0.000008  # $0.008 per 1K input tokens
+        
+      - key: claude.cost.output_tokens_cost  
+        action: multiply
+        from_attribute: claude.request.tokens.output
+        value: 0.000024  # $0.024 per 1K output tokens
+        
+      # Add geographical region for compliance
+      - key: aws.region
+        value: ${AWS_REGION}
+        action: upsert
+        
+      # Tag high-value sessions
+      - key: claude.session.high_value
+        action: insert
+        value: true
+        conditions:
+          - key: claude.request.tokens.total
+            value: 10000
+            operation: >
+            
+  # Transform processor for advanced data manipulation  
+  transform:
+    # Trace transformations
+    traces:
+      - context: span
+        statements:
+          # Calculate total cost
+          - set(attributes["claude.cost.total_usd"], 
+               attributes["claude.cost.input_tokens_cost"] + attributes["claude.cost.output_tokens_cost"])
+               
+          # Calculate efficiency metrics
+          - set(attributes["claude.efficiency.tokens_per_second"], 
+               attributes["claude.request.tokens.total"] / (attributes["claude.latency.total_ms"] / 1000.0))
+               
+          # Set quality score based on success and efficiency
+          - set(attributes["claude.quality.score"],
+               Cond(attributes["claude.operation.success"] == true,
+                    Cond(attributes["claude.efficiency.tokens_per_second"] > 10.0, 10.0, 8.0),
+                    3.0))
+                    
+          # Add business hours indicator
+          - set(attributes["claude.timing.business_hours"],
+               hour(now()) >= 9 and hour(now()) <= 17)
+               
+    # Metric transformations
+    metrics:
+      - context: metric
+        statements:
+          # Aggregate metrics by team and security profile
+          - set(attributes["aggregation.key"],
+               Concat([attributes["claude.user.team"], "_", attributes["claude.security.profile"]]))
+               
+  # Filter processor to remove sensitive data or low-value spans
+  filter:
+    # Traces filter
+    traces:
+      span:
+        # Remove traces with sensitive operations in non-production
+        - '${DEPLOYMENT_ENVIRONMENT} != "production" and attributes["claude.operation.type"] == "credential_refresh"'
+        
+        # Remove very short-lived spans that add noise
+        - 'attributes["claude.latency.total_ms"] < 10'
+        
+    # Metrics filter  
+    metrics:
+      metric:
+        # Remove metrics from test users
+        - 'attributes["claude.user.email"] matches ".*@test\\..*"'
+        
+  # Grouping processor for span aggregation
+  groupbytrace:
+    wait_duration: 10s
+    num_traces: 1000
+    
+  # Probabilistic sampling for high-volume environments
+  probabilistic_sampler:
+    sampling_percentage: 100.0  # Start with 100%, adjust based on volume
+    hash_seed: 22
+
+exporters:
+  # Primary CloudWatch exporter for metrics
+  awscloudwatch:
+    region: ${AWS_REGION}
+    namespace: ClaudeCode/Enterprise
+    dimension_rollup_option: NoDimensionRollup
+    metric_declarations:
+      # User activity metrics
+      - dimensions: [[Team], [Team, SecurityProfile]]
+        metric_name_selectors:
+          - "^claude\\.user\\..*"
+          - "^claude\\.session\\..*"
+          
+      # Performance metrics  
+      - dimensions: [[Team], [ModelId], [Team, ModelId]]
+        metric_name_selectors:
+          - "^claude\\.latency\\..*"
+          - "^claude\\.cache\\..*"
+          - "^claude\\.efficiency\\..*"
+          
+      # Cost metrics
+      - dimensions: [[Team], [CostCenter], [Team, CostCenter]]
+        metric_name_selectors:
+          - "^claude\\.cost\\..*"
+          - "^claude\\.request\\.tokens\\..*"
+          
+      # Quality and compliance metrics
+      - dimensions: [[Team], [SecurityProfile], [Team, SecurityProfile]]
+        metric_name_selectors:
+          - "^claude\\.quality\\..*"
+          - "^claude\\.compliance\\..*"
+          - "^claude\\.operation\\.success.*"
+          
+    # Metric transformations
+    metric_transformations:
+      - metric_name: "claude.cost.total_usd"
+        action: "sum"
+        unit: "None"
+        
+      - metric_name: "claude.request.tokens.total"
+        action: "sum" 
+        unit: "Count"
+        
+      - metric_name: "claude.latency.total_ms"
+        action: "avg"
+        unit: "Milliseconds"
+        
+      - metric_name: "claude.cache.hit_rate"
+        action: "avg"
+        unit: "Percent"
+
+  # CloudWatch Logs exporter for detailed trace data
+  awscloudwatchlogs:
+    region: ${AWS_REGION}
+    log_group_name: "/aws/claude-code/enterprise-logs"
+    log_retention: 30
+    
+  # X-Ray exporter for distributed tracing
+  awsxray:
+    region: ${AWS_REGION}
+    no_verify_ssl: false
+    local_mode: false
+    
+  # S3 exporter for long-term data storage and analytics
+  s3:
+    region: ${AWS_REGION}
+    s3_bucket: ${S3_BUCKET_NAME}
+    s3_prefix: "claude-code-telemetry"
+    s3_partition: "minute"  # Partition by minute for efficient querying
+    compression: "gzip"
+    format: "parquet"  # Parquet format for efficient analytics
+    
+  # Debug exporter for development
+  debug:
+    verbosity: detailed
+    sampling_initial: 5
+    sampling_thereafter: 200
+    
+  # Prometheus exporter for custom metrics
+  prometheus:
+    endpoint: "0.0.0.0:9090"
+    namespace: claude_code_enterprise
+    const_labels:
+      environment: ${DEPLOYMENT_ENVIRONMENT}
+      cluster: ${ECS_CLUSTER_NAME}
+      
+  # OTLP exporter for forwarding to other collectors
+  otlp/downstream:
+    endpoint: ${DOWNSTREAM_OTEL_ENDPOINT}
+    headers:
+      authorization: "Bearer ${DOWNSTREAM_AUTH_TOKEN}"
+    compression: gzip
+    
+extensions:
+  # Health check extension
+  health_check:
+    endpoint: 0.0.0.0:13133
+    
+  # Performance profiling
+  pprof:
+    endpoint: 0.0.0.0:1777
+    
+  # Zpages for debugging
+  zpages:
+    endpoint: 0.0.0.0:55679
+    
+  # Memory ballast for stable memory usage
+  memory_ballast:
+    size_mib: 64
+
+connectors:
+  # Forward metrics to another pipeline for additional processing
+  forward:
+    metrics:
+      receivers: [otlp]
+      processors: [memory_limiter, batch]
+      exporters: [prometheus]
+
+service:
+  extensions: [health_check, pprof, zpages, memory_ballast]
+  
+  pipelines:
+    # Primary traces pipeline
+    traces:
+      receivers: [otlp]
+      processors: [
+        memory_limiter, 
+        resource, 
+        attributes, 
+        transform, 
+        filter, 
+        probabilistic_sampler,
+        groupbytrace,
+        batch
+      ]
+      exporters: [awsxray, awscloudwatchlogs, s3]
+      
+    # Primary metrics pipeline  
+    metrics:
+      receivers: [otlp, prometheus, awscloudwatch]
+      processors: [
+        memory_limiter,
+        resource, 
+        attributes,
+        transform,
+        filter,
+        batch
+      ]
+      exporters: [awscloudwatch, prometheus, s3]
+      
+    # Development/debug pipeline
+    traces/debug:
+      receivers: [otlp]
+      processors: [memory_limiter, resource, batch]
+      exporters: [debug]
+      
+    metrics/debug:
+      receivers: [otlp] 
+      processors: [memory_limiter, resource, batch]
+      exporters: [debug]
+
+  # Telemetry configuration for the collector itself
+  telemetry:
+    logs:
+      level: "info"
+      development: false
+      sampling:
+        enabled: true
+        tick: 10s
+        initial: 5
+        thereafter: 200
+        
+    metrics:
+      level: detailed
+      address: 0.0.0.0:8888
+      
+    traces:
+      level: basic
