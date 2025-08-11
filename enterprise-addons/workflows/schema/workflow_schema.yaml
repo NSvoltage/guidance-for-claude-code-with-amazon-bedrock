@@ -1,9 +1,7 @@
-# Claude Code Enterprise Workflow Schema v1.0
-# JSON Schema definition for workflow YAML files
-
+# Workflow Schema v2.0 - Streamlined for production use
 $schema: "http://json-schema.org/draft-07/schema#"
-title: "Claude Code Enterprise Workflow Schema"
-description: "Schema for defining structured workflows with deterministic and agentic steps"
+title: "Enterprise Workflow Schema"
+description: "Production-ready workflow schema with security controls"
 type: "object"
 
 required:

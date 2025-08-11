@@ -50,3 +50,17 @@ source/.ccwb-config/
 
 guidance-submission/
 tests/
+
+# Python Virtual Environments (CRITICAL - prevents bloat)
+venv/
+env/
+.venv/
+test_env/
+**/test_env/
+**/.venv/
+**/venv/
+**/env/
+
+# Development artifacts  
+**/site-packages/
+**/__pycache__/

@@ -1,0 +1,180 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Description: 'Consolidated Monitoring Template - OpenTelemetry, Dashboards, and Analytics Pipeline'
+
+Parameters:
+  ApplicationName:
+    Type: String
+    Default: claude-code-enterprise
+    Description: Application name for resource naming
+
+  Environment:
+    Type: String
+    Default: production
+    AllowedValues: [development, staging, production]
+    Description: Deployment environment
+
+Resources:
+  # OpenTelemetry Collector Configuration
+  OTelCollectorTaskDefinition:
+    Type: AWS::ECS::TaskDefinition
+    Properties:
+      Family: !Sub "${ApplicationName}-otel-collector"
+      NetworkMode: awsvpc
+      RequiresCompatibilities:
+        - FARGATE
+      Cpu: 256
+      Memory: 512
+      ExecutionRoleArn: !GetAtt OTelExecutionRole.Arn
+      TaskRoleArn: !GetAtt OTelTaskRole.Arn
+      ContainerDefinitions:
+        - Name: otel-collector
+          Image: public.ecr.aws/aws-observability/aws-otel-collector:latest
+          Essential: true
+          LogConfiguration:
+            LogDriver: awslogs
+            Options:
+              awslogs-group: !Ref OTelLogGroup
+              awslogs-region: !Ref AWS::Region
+              awslogs-stream-prefix: otel-collector
+          Environment:
+            - Name: AWS_REGION
+              Value: !Ref AWS::Region
+
+  OTelExecutionRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: ecs-tasks.amazonaws.com
+            Action: sts:AssumeRole
+      ManagedPolicyArns:
+        - arn:aws:iam::aws:policy/service-role/AmazonECSTaskExecutionRolePolicy
+
+  OTelTaskRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: ecs-tasks.amazonaws.com
+            Action: sts:AssumeRole
+      Policies:
+        - PolicyName: CloudWatchMetricsPolicy
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action:
+                  - cloudwatch:PutMetricData
+                  - logs:PutLogEvents
+                  - logs:CreateLogGroup
+                  - logs:CreateLogStream
+                  - xray:PutTraceSegments
+                  - xray:PutTelemetryRecords
+                Resource: '*'
+
+  OTelLogGroup:
+    Type: AWS::Logs::LogGroup
+    Properties:
+      LogGroupName: !Sub "/ecs/${ApplicationName}-otel-collector"
+      RetentionInDays: 7
+
+  # Enterprise Analytics Pipeline
+  AnalyticsKinesisStream:
+    Type: AWS::Kinesis::Stream
+    Properties:
+      Name: !Sub "${ApplicationName}-analytics-stream"
+      ShardCount: 1
+      StreamEncryption:
+        EncryptionType: KMS
+        KeyId: alias/aws/kinesis
+
+  AnalyticsS3Bucket:
+    Type: AWS::S3::Bucket
+    Properties:
+      BucketName: !Sub "${ApplicationName}-analytics-${Environment}-${AWS::AccountId}"
+      VersioningConfiguration:
+        Status: Enabled
+      BucketEncryption:
+        ServerSideEncryptionConfiguration:
+          - ServerSideEncryptionByDefault:
+              SSEAlgorithm: AES256
+      PublicAccessBlockConfiguration:
+        BlockPublicAcls: true
+        BlockPublicPolicy: true
+        IgnorePublicAcls: true
+        RestrictPublicBuckets: true
+
+  # Advanced CloudWatch Dashboard
+  ComprehensiveDashboard:
+    Type: AWS::CloudWatch::Dashboard
+    Properties:
+      DashboardName: !Sub "${ApplicationName}-comprehensive-monitoring"
+      DashboardBody: !Sub |
+        {
+          "widgets": [
+            {
+              "type": "metric",
+              "properties": {
+                "metrics": [
+                  ["AWS/Bedrock", "Invocations", "ModelId", "claude-3-5-sonnet"],
+                  [".", "InputTokens", ".", "."],
+                  [".", "OutputTokens", ".", "."],
+                  [".", "InvocationLatency", ".", "."]
+                ],
+                "period": 300,
+                "stat": "Average",
+                "region": "${AWS::Region}",
+                "title": "Claude Model Performance",
+                "view": "timeSeries"
+              }
+            },
+            {
+              "type": "metric",
+              "properties": {
+                "metrics": [
+                  ["AWS/Lambda", "Duration", "FunctionName", "${ApplicationName}"],
+                  [".", "Errors", ".", "."],
+                  [".", "Throttles", ".", "."]
+                ],
+                "period": 300,
+                "stat": "Sum",
+                "region": "${AWS::Region}",
+                "title": "Application Health"
+              }
+            },
+            {
+              "type": "log",
+              "properties": {
+                "query": "SOURCE '/aws/lambda/${ApplicationName}' | fields @timestamp, userId, securityProfile, @message\n| filter @message like /SECURITY_EVENT/\n| sort @timestamp desc\n| limit 50",
+                "region": "${AWS::Region}",
+                "title": "Security Events",
+                "height": 6
+              }
+            }
+          ]
+        }
+
+Outputs:
+  OTelCollectorTaskDefinition:
+    Description: OpenTelemetry Collector Task Definition ARN
+    Value: !Ref OTelCollectorTaskDefinition
+    Export:
+      Name: !Sub "${ApplicationName}-${Environment}-otel-task-definition"
+
+  AnalyticsStreamName:
+    Description: Analytics Kinesis Stream Name
+    Value: !Ref AnalyticsKinesisStream
+    Export:
+      Name: !Sub "${ApplicationName}-${Environment}-analytics-stream"
+
+  AnalyticsBucket:
+    Description: Analytics S3 Bucket Name
+    Value: !Ref AnalyticsS3Bucket
+    Export:
+      Name: !Sub "${ApplicationName}-${Environment}-analytics-bucket"
