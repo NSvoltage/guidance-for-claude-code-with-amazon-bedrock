@@ -145,6 +145,7 @@ class SecureInputValidator:
             r'globals\s*\(\)',
             r'__builtins__',
             r'__globals__',
+            r'__class__',
             r'\.mro\(\)',
             r'\.subclasses\(\)',
         ]
@@ -190,6 +191,14 @@ class SecureInputValidator:
         'mvn', 'gradle', 'make', 'cargo', 'go', 'rustc', 'javac'
     }
     
+    def __init__(self, strictness_level: str = "standard"):
+        """Initialize validator with configurable strictness.
+        
+        Args:
+            strictness_level: 'permissive', 'standard', 'strict', or 'paranoid'
+        """
+        self.strictness_level = strictness_level
+        self._configure_patterns()
         self.pattern_regex = re.compile('|'.join(self.DANGEROUS_PATTERNS), re.IGNORECASE)
     
     @classmethod
